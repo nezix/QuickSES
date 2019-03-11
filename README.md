@@ -2,6 +2,9 @@
 
 Tool to compute molecular Solvent Excluded Surface meshes on the GPU using CUDA.
 
+<img src="Images/SES_3eam0.15_2.JPG" height="400" /> <img src="Images/SES_3eam0.15.JPG" height="300" />
+
+
 Implementation of Hermosilla's paper: Hermosilla, Pedro, Michael Krone, Victor Guallar, Pere-Pau Vázquez, Àlvar Vinacua, and Timo Ropinski. "Interactive GPU-based generation of solvent-excluded surfaces
 
 You can find it here : https://www.uni-ulm.de/fileadmin/website_uni_ulm/iui.inst.100/institut/Papers/viscom/2017/hermosilla17ses.pdf
