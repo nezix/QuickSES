@@ -4,7 +4,7 @@ NVCCFLAGS=-use_fast_math -O3
 CFLAGS=-O3
 
 QuickSES: CudaSurf.o cpdb/cpdb.o cpdb/utils.o SmoothMesh.o
-	$(CC) -o CUDASES $(CFLAGS) cpdb/cpdb.o cpdb/utils.o SmoothMesh.o CudaSurf.o
+	$(CC) -o QuickSES $(CFLAGS) cpdb/cpdb.o cpdb/utils.o SmoothMesh.o CudaSurf.o
 
 
 CudaSurf.o: CudaSurf.cu
