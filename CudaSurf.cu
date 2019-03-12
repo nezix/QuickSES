@@ -1163,7 +1163,6 @@ int main(int argc, const char * argv[]) {
     pdb *P;
     P = initPDB();
 
-    cout << "TOTO : '"<<((char *)inputFilePath.c_str())<<"'"<<endl;
     parsePDB((char *)inputFilePath.c_str(), P, (char *)"");
 
     cerr << "Grid resolution = " << gridResolutionSES << endl;
