@@ -15,11 +15,28 @@ This implementation contains a 3D uniform grid to access atoms neighbors in cons
 
 QuickSES uses CPDB for parsing PDB files : https://github.com/vegadj/cpdb
 
+```console
+$ ./QuickSES.exe
+Usage:   QuickSES.exe {OPTIONS}
+
+    QuickSES, SES mesh generation using GPU
+
+  OPTIONS:
+
+      -i[input.pdb]                     Input PDB file
+      -o[output.obj]                    Output OBJ mesh file
+      -l[smooth factor]                 (1) Times to run Laplacian smoothing step.
+      -v[voxel size]                    (0.5) Voxel size in Angstrom. Defines the quality of the mesh.
+      -s[slice size]                    (300) Size of the sub-grid. Defines the quantity of GPU memory needed.
+      -h, --help                           Display this help menu
+```
+
+
 The default resolution is set to 0.5 Å but can be changed at runtime.
 
-The size of the slice that defines how much memory QuickSES uses can be set in the CudaSurf.cu file.
+The size of the slice that defines how much memory QuickSES uses.
 
-The tool can also be used as a library by sending an array of positions and an array of radius per atom.
+The tool can also be used as a library by sending an array of positions and an array of radius per atom (see API_* functions).
 
 ## Compilation
 
