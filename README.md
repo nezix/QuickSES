@@ -11,13 +11,19 @@ You can find it here : https://www.uni-ulm.de/fileadmin/website_uni_ulm/iui.inst
 
 This implementation contains a 3D uniform grid to access atoms neighbors in constant time and a Marching Cubes algorithm implemented in CUDA, a method to weld mesh vertices is also implemented on the GPU.
 
+## Example
+
+```console
+$ ./QuickSES ~/PDBs/3eam.pdb ~/meshes/3eam_mesh.obj -v 0.3
+```
+
 ## Input / Output
 
 QuickSES uses CPDB for parsing PDB files : https://github.com/vegadj/cpdb
 
 ```console
-$ ./QuickSES.exe
-Usage:   QuickSES.exe {OPTIONS}
+$ ./QuickSES
+Usage:   QuickSES {OPTIONS}
 
     QuickSES, SES mesh generation using GPU
 
