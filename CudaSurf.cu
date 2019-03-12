@@ -45,6 +45,8 @@ SOFTWARE.
 
 #include <vector>
 
+#include "args.hxx"
+
 #include "Kernels.cu"
 #include "cpdb.h"
 #include "SmoothMesh.h"
@@ -57,14 +59,14 @@ SOFTWARE.
 
 using namespace std;
 
-#define SLICE 300
 
+int SLICE = 300;
 float probeRadius = 1.4f;
-
 float gridResolutionNeighbor;
 float gridResolutionSES = 0.5f;
-
+int laplacianSmoothSteps = 1;
 string outputFilePath = "output.obj";
+string inputFilePath = "";
 
 
 
@@ -276,7 +278,7 @@ void writeToObj(const string &fileName, const vector<int> &meshTriSizes, const v
     fclose(fptr);
 
 #if MEASURETIME
-    std::cout << "Time for writting " << (std::clock() - start) / (double)(CLOCKS_PER_SEC / 1000) << " ms" << std::endl;
+    std::cerr << "Time for writting " << (std::clock() - start) / (double)(CLOCKS_PER_SEC / 1000) << " ms" << std::endl;
 #endif
 
 }
@@ -305,7 +307,7 @@ void writeToObj(const string &fileName, const MeshData &mesh) {
     }
     fclose(fptr);
 #if MEASURETIME
-    std::cout << "Time for writting " << (std::clock() - start) / (double)(CLOCKS_PER_SEC / 1000) << " ms" << std::endl;
+    std::cerr << "Time for writting " << (std::clock() - start) / (double)(CLOCKS_PER_SEC / 1000) << " ms" << std::endl;
 #endif
 }
 void writeToObj(const string &fileName, std::vector<MeshData> meshes) {
@@ -355,7 +357,7 @@ void writeToObj(const string &fileName, std::vector<MeshData> meshes) {
     }
     fclose(fptr);
 #if MEASURETIME
-    std::cout << "Time for writting " << (std::clock() - start) / (double)(CLOCKS_PER_SEC / 1000) << " ms" << std::endl;
+    std::cerr << "Time for writting " << (std::clock() - start) / (double)(CLOCKS_PER_SEC / 1000) << " ms" << std::endl;
 #endif
 }
 
@@ -587,12 +589,12 @@ MeshData computeMarchingCubes(int3 sliceGridSESDim, int cutMC, int sliceNbCellSE
 //     vertPerCell = (uint2 *)malloc(sizeof(uint2) * sliceNbCellSES);
 //     compactedVoxels = (unsigned int *)malloc(sizeof(unsigned int) * sliceNbCellSES);
 
-//     cout << "Allocating " << (sizeof(float) * sliceNbCellSES + 3 * sizeof(int) * sliceNbCellSES) / 1000000.0f << " Mo" << endl;
+//     cerr << "Allocating " << (sizeof(float) * sliceNbCellSES + 3 * sizeof(int) * sliceNbCellSES) / 1000000.0f << " Mo" << endl;
 
 //     int3 offset = {0, 0, 0};
 //     int cut = 8;
 
-//     // cout << "Full size grid = " << gridSESSize << " x " << gridSESSize << " x " << gridSESSize << endl;
+//     // cerr << "Full size grid = " << gridSESSize << " x " << gridSESSize << " x " << gridSESSize << endl;
 //     // // cudaEventRecord(start);
 //     // // for (int slice = 0; slice < gridSESSize; slice += sliceSmallSize) {
 //     for (int i = 0; i < gridSESSize; i += sliceSmallSize) {
@@ -610,7 +612,7 @@ MeshData computeMarchingCubes(int3 sliceGridSESDim, int cutMC, int sliceNbCellSE
 //                                                max(0, offset.y - rangeSearchRefine),
 //                                                max(0, offset.z - rangeSearchRefine));
 
-//                 cout << " ============== " << "offset = " << offset.x << "/" << offset.y << "/" << offset.z << " |  slice size = " << fullSliceGridSESDim.x << " ============== " << endl;
+//                 cerr << " ============== " << "offset = " << offset.x << "/" << offset.y << "/" << offset.z << " |  slice size = " << fullSliceGridSESDim.x << " ============== " << endl;
 //                 for (int x = 0; x < sliceSize; x++) {
 //                     for (int y = 0; y < sliceSize; y++) {
 //                         for (int z = 0; z < sliceSize; z++) {
@@ -662,7 +664,7 @@ MeshData computeMarchingCubes(int3 sliceGridSESDim, int cutMC, int sliceNbCellSE
 //                     }
 //                     notEmptyCell++;
 //                 }
-//                 cout << "Not empty = " << notEmptyCell << endl;
+//                 cerr << "Not empty = " << notEmptyCell << endl;
 
 //                 //--------Distance refinement
 
@@ -855,7 +857,7 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
     gpuErrchk( cudaFree(cudaAtomPosRad) );
 
 
-    // std::cout << "Time for setup " << (std::clock() - start) / (double)(CLOCKS_PER_SEC / 1000) << " ms" << std::endl;
+    // std::cerr << "Time for setup " << (std::clock() - start) / (double)(CLOCKS_PER_SEC / 1000) << " ms" << std::endl;
     // start = std::clock();
 
 
@@ -877,12 +879,12 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
 
     gpuErrchk( cudaPeekAtLastError() );
 
-    // cout << "Allocating " << (sizeof(float) * sliceNbCellSES + 3 * sizeof(int) * sliceNbCellSES) / 1000000.0f << " Mo" << endl;
+    // cerr << "Allocating " << (sizeof(float) * sliceNbCellSES + 3 * sizeof(int) * sliceNbCellSES) / 1000000.0f << " Mo" << endl;
 
     int3 offset = {0, 0, 0};
     int cut = 8;
 
-    // cout << "Full size grid = " << gridSESSize << " x " << gridSESSize << " x " << gridSESSize << endl;
+    // cerr << "Full size grid = " << gridSESSize << " x " << gridSESSize << " x " << gridSESSize << endl;
     // cudaEventRecord(start);
     // for (int slice = 0; slice < gridSESSize; slice += sliceSmallSize) {
     for (int i = 0; i < gridSESSize; i += sliceSmallSize) {
@@ -891,7 +893,7 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
             offset.y = j;
             for (int k = 0; k < gridSESSize; k += sliceSmallSize) {
                 offset.z = k;
-                // cout << "Starting : " << offset.x << " / " << offset.y << " / " << offset.z << endl;
+                // cerr << "Starting : " << offset.x << " / " << offset.y << " / " << offset.z << endl;
 
 
                 memsetCudaFloat <<< (sliceNbCellSES + NBTHREADS - 1) / NBTHREADS, NBTHREADS >>> (cudaGridValues, probeRadius, sliceNbCellSES);
@@ -905,8 +907,8 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
                                                max(0, offset.y - rangeSearchRefine),
                                                max(0, offset.z - rangeSearchRefine));
 
-                // cout << "Fulllll : " << fullSliceGridSESDim.x << ", " << fullSliceGridSESDim.y << ", " << fullSliceGridSESDim.z << "  sliceGridSESDim = " << sliceGridSESDim.x << endl;
-                // cout << "global = " << globalWorkSize.x << ", " << globalWorkSize.y << ", " << globalWorkSize.z << "   " << (sliceSmallSize + cut - 1) / cut << endl;
+                // cerr << "Fulllll : " << fullSliceGridSESDim.x << ", " << fullSliceGridSESDim.y << ", " << fullSliceGridSESDim.z << "  sliceGridSESDim = " << sliceGridSESDim.x << endl;
+                // cerr << "global = " << globalWorkSize.x << ", " << globalWorkSize.y << ", " << globalWorkSize.z << "   " << (sliceSmallSize + cut - 1) / cut << endl;
 
 
                 probeIntersection <<< globalWorkSize, localWorkSize >>>(cudaFillCheck, cudaHashIndex, gridNeighborDim, originGridNeighborDx,
@@ -925,7 +927,7 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
 
 
                 if (notEmptyCells == 0) {
-                    // cout << "Empty cells !!!" << endl;
+                    // cerr << "Empty cells !!!" << endl;
                     continue;
                 }
 
@@ -943,7 +945,7 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
                 for (unsigned int o = 0; o < notEmptyCells; o += tranche) {
 
                     globalWorkSize = dim3((tranche + NBTHREADS - 1) / NBTHREADS, 1.0f, 1.0f);
-                    // cout <<o<< " Launch (" << globalWorkSize.x << ", "<<globalWorkSize.y<<", "<<globalWorkSize.z<<") x ("<<localWorkSize.x<<", "<<localWorkSize.y<<", 1.0)" << endl;
+                    // cerr <<o<< " Launch (" << globalWorkSize.x << ", "<<globalWorkSize.y<<", "<<globalWorkSize.z<<") x ("<<localWorkSize.x<<", "<<localWorkSize.y<<", 1.0)" << endl;
 
                     distanceFieldRefine <<< globalWorkSize, localWorkSize, 0, streams[idStream]>>> (cudaFillCheck, cudaHashIndex, gridNeighborDim, originGridNeighborDx,
                             gridSESDim, fullSliceGridSESDim/*sliceGridSESDim*/, originGridSESDx, cellStartEnd,
@@ -1006,7 +1008,7 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
     // cudaEventSynchronize(stop);
     // float milliseconds = 0;
     // cudaEventElapsedTime(&milliseconds, start, stop);
-    // std::cout << "Time for step 2 : " << milliseconds << " ms" << std::endl;
+    // std::cerr << "Time for step 2 : " << milliseconds << " ms" << std::endl;
 
 
     cudaFree(cudaSortedAtomPosRad);
@@ -1022,7 +1024,7 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
     free(atomPosRad);
 
 #if MEASURETIME
-    std::cout << "Time for computing SES " << (std::clock() - startSES) / (double)(CLOCKS_PER_SEC / 1000) << " ms" << std::endl;
+    std::cerr << "Time for computing SES " << (std::clock() - startSES) / (double)(CLOCKS_PER_SEC / 1000) << " ms" << std::endl;
 #endif
 
 
@@ -1098,7 +1100,6 @@ extern "C"{
                 globalTriangles[t * 3] = globalTriangles[t * 3 + 1];
                 globalTriangles[t * 3 + 1] = save;
             }
-
         }
         return globalTriangles;
     }
@@ -1120,34 +1121,53 @@ extern "C"{
 
 
 int main(int argc, const char * argv[]) {
+
+    args::ArgumentParser parser("QuickSES, SES mesh generation using GPU", "");
+    args::Group groupMandatory(parser, "", args::Group::Validators::All);
+    args::Group groupOptional(parser,  "", args::Group::Validators::DontCare);
+    args::ValueFlag<string> inFile(groupMandatory, "input.pdb", "Input PDB file", {'i'});
+    args::ValueFlag<string> outFile(groupMandatory, "output.obj", "Output OBJ mesh file", {'o'});
+    args::ValueFlag<int> smoothTimes(groupOptional, "smooth factor", "(1) Times to run Laplacian smoothing step.", {'l'});
+    args::ValueFlag<float> voxelSize(groupOptional, "voxel size", "(0.5) Voxel size in Angstrom. Defines the quality of the mesh.", {'v'});
+    args::ValueFlag<int> slice(groupOptional, "slice size", "(300) Size of the sub-grid. Defines the quantity of GPU memory needed.", {'s'});
+    args::HelpFlag help(groupOptional, "help", "   Display this help menu", {'h', "help"});
+
+    try {
+        parser.ParseCLI(argc, argv);
+    }
+    catch (args::Help) {
+        std::cerr << parser;
+        return 0;
+    }
+    catch (args::ParseError e) {
+        std::cerr << e.what() << std::endl;
+        std::cerr << parser;
+        return -1;
+    }
+    catch (args::ValidationError e) {
+        // std::cerr << e.what() << std::endl;
+        std::cerr << "Usage: " << parser;
+        return -1;
+    }
+
+    if (inFile) { inputFilePath = args::get(inFile); }
+    if (outFile) { outputFilePath = args::get(outFile); }
+    if (smoothTimes) { laplacianSmoothSteps = args::get(smoothTimes); }
+    if (voxelSize) { gridResolutionSES = args::get(voxelSize); }
+    if (slice) {SLICE = args::get(slice); }
+
     std::clock_t startparse = std::clock();
-
-    if (argc < 3) {
-        std::cout << "Usage : " << argv[0] << " file.pdb output.obj [gridResolution]" << endl;
-        exit(-1);
-    }
-    if (argc == 4) {
-        float valRes = stof(argv[3]);
-        if (valRes > 0.0f && valRes < 2.0f) {
-            gridResolutionSES = valRes;
-        }
-        else
-            cout << "Ignoring grid resolution value : must be between 0 and 2 Angsrtrom, default value is " << gridResolutionSES << endl;
-    }
-
-    outputFilePath = argv[2];
-
-    cout << "Grid resolution = " << gridResolutionSES << endl;
 
     initRadiusDic();
 
     pdb *P;
     P = initPDB();
 
-    parsePDB((char *)argv[1], P, (char *)"");
+    cout << "TOTO : '"<<((char *)inputFilePath.c_str())<<"'"<<endl;
+    parsePDB((char *)inputFilePath.c_str(), P, (char *)"");
 
-    std::cout << "Time for parse " << (std::clock() - startparse) / (double)(CLOCKS_PER_SEC / 1000) << " ms" << std::endl;
-
+    cerr << "Grid resolution = " << gridResolutionSES << endl;
+    std::cerr << "Time for parse " << (std::clock() - startparse) / (double)(CLOCKS_PER_SEC / 1000) << " ms" << std::endl;
 
     unsigned int N = 0;
     std::vector<float3> atomPos;
@@ -1177,7 +1197,7 @@ int main(int argc, const char * argv[]) {
     }
 
 
-    std::vector<MeshData> resultMeshes = computeSlicedSES(&atomPos[0], &atomRadii[0], N, gridResolutionSES);
+    std::vector<MeshData> resultMeshes = computeSlicedSES(&atomPos[0], &atomRadii[0], N, gridResolutionSES, laplacianSmoothSteps);
     // std::vector<MeshData> resultMeshes = computeSlicedSESCPU(P);
 
     //Write to OBJ
