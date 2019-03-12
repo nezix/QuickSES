@@ -64,7 +64,7 @@ float probeRadius = 1.4f;
 float gridResolutionNeighbor;
 float gridResolutionSES = 0.5f;
 
-string fileName = "output.obj";
+string outputFilePath = "output.obj";
 
 
 
@@ -1122,18 +1122,20 @@ extern "C"{
 int main(int argc, const char * argv[]) {
     std::clock_t startparse = std::clock();
 
-    if (argc < 2) {
-        std::cout << "Usage : " << argv[0] << " file.pdb [gridResolution]" << endl;
+    if (argc < 3) {
+        std::cout << "Usage : " << argv[0] << " file.pdb output.obj [gridResolution]" << endl;
         exit(-1);
     }
-    if (argc == 3) {
-        float valRes = stof(argv[2]);
+    if (argc == 4) {
+        float valRes = stof(argv[3]);
         if (valRes > 0.0f && valRes < 2.0f) {
             gridResolutionSES = valRes;
         }
         else
             cout << "Ignoring grid resolution value : must be between 0 and 2 Angsrtrom, default value is " << gridResolutionSES << endl;
     }
+
+    outputFilePath = argv[2];
 
     cout << "Grid resolution = " << gridResolutionSES << endl;
 
@@ -1179,7 +1181,7 @@ int main(int argc, const char * argv[]) {
     // std::vector<MeshData> resultMeshes = computeSlicedSESCPU(P);
 
     //Write to OBJ
-    writeToObj("testSES.obj", resultMeshes);
+    writeToObj(outputFilePath, resultMeshes);
 
     freePDB(P);
 
