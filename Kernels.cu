@@ -23,6 +23,9 @@ SOFTWARE.
 
 #define NBTHREADS 256
 #define EMPTYCELL INT_MAX-1
+#define INSIDE -10.0f
+#define OUTSIDE 10.0f
+#define CAVITY  -5.0f
 #define PROBERADIUS (1.4f)
 #define EPSILON (0.001f)
 
@@ -122,6 +125,16 @@ struct is_notempty
     }
 };
 
+struct is_cavity
+{
+    __host__ __device__
+    bool operator()(const float &x) const
+    {
+        // return abs(x - CAVITY) < EPSILON;
+        return x >= 0.0f && x < PROBERADIUS;
+    }
+};
+
 
 __global__ void memsetCudaFloat(float *data, float val, int N){
     unsigned int index = blockDim.x * blockIdx.x + threadIdx.x;
@@ -182,7 +195,7 @@ inline __host__ __device__ float fast_distance(float3 p1, float3 p2) {
     float y = (p1.y - p2.y) * (p1.y - p2.y);
     float z = (p1.z - p2.z) * (p1.z - p2.z);
 
-    return sqrt( x + y + z);
+    return sqrtf( x + y + z);
 }
 inline __host__ __device__ float sqr_distance(float3 p1, float3 p2) {
     float x = (p1.x - p2.x) * (p1.x - p2.x);
@@ -251,92 +264,6 @@ __global__ void hashAtoms(unsigned int natoms,
 
 }
 
-
-//https://github.com/FROL256/opencl_bitonic_sort_by_key/blob/master/bitonic_sort_gpu.h
-
-inline __device__ int getKey(int2 v) { return v.x; }
-inline __device__ int getVal(int2 v) { return v.y; }
-
-inline __device__ bool compare(int2 a, int2 b) { return getKey(a) < getKey(b); }
-
-__global__ void bitonic_pass_kernel(int2* theArray, int stage, int passOfStage, int a_invertModeOn)
-{
-    int j = blockDim.x * blockIdx.x + threadIdx.x;
-
-    const int r     = 1 << (passOfStage);
-    const int lmask = r - 1;
-
-    const int left  = ((j >> passOfStage) << (passOfStage + 1)) + (j & lmask);
-    const int right = left + r;
-
-    const int2 a = theArray[left];
-    const int2 b = theArray[right];
-
-    const bool cmpRes = compare(a, b);
-
-    const int2 minElem = cmpRes ? a : b;
-    const int2 maxElem = cmpRes ? b : a;
-
-    const int oddEven = j >> stage;
-
-    const bool isSwap = (oddEven & 1) & a_invertModeOn;
-
-    const int minId = isSwap ? right : left;
-    const int maxId = isSwap ? left  : right;
-
-    theArray[minId] = minElem;
-    theArray[maxId] = maxElem;
-}
-
-
-__global__ void bitonic_512( int2* theArray, int stage, int passOfStageBegin, int a_invertModeOn)
-{
-    int tid = blockDim.x * blockIdx.x + threadIdx.x;
-    int lid = threadIdx.x;
-
-    int blockId = (tid / 256);
-
-    __shared__ int2 s_array[512];
-
-    s_array[lid + 0]   = theArray[blockId * 512 + lid + 0];
-    s_array[lid + 256] = theArray[blockId * 512 + lid + 256];
-
-    __syncthreads();
-
-    for (int passOfStage = passOfStageBegin; passOfStage >= 0; passOfStage--)
-    {
-        const int j     = lid;
-        const int r     = 1 << (passOfStage);
-        const int lmask = r - 1;
-
-        const int left  = ((j >> passOfStage) << (passOfStage + 1)) + (j & lmask);
-        const int right = left + r;
-
-        const int2 a = s_array[left];
-        const int2 b = s_array[right];
-
-        const bool cmpRes = compare(a, b);
-
-        const int2 minElem = cmpRes ? a : b;
-        const int2 maxElem = cmpRes ? b : a;
-
-        const int oddEven = tid >> stage; // (j >> stage)
-
-        const bool isSwap = (oddEven & 1) & a_invertModeOn;
-
-        const int minId = isSwap ? right : left;
-        const int maxId = isSwap ? left  : right;
-
-        s_array[minId] = minElem;
-        s_array[maxId] = maxElem;
-
-        __syncthreads();
-    }
-
-    theArray[blockId * 512 + lid + 0]   = s_array[lid + 0];
-    theArray[blockId * 512 + lid + 256] = s_array[lid + 256];
-
-}
 
 
 __global__ void sortCell(unsigned int natoms, float4 *xyzr, int2 *atomHashIndex,
@@ -500,9 +427,6 @@ __global__ void probeIntersection(int * checkFill,
     int range = (int)ceil(PROBERADIUS / dxSES);
     if (abs(result) < EPSILON){
         fill = hash;
-        // if(i < range || j < range || k < range || i > smallsliceGridDimSES.x + range || j > smallsliceGridDimSES.y + range || k > smallsliceGridDimSES.z + range){
-        //     fill = EMPTYCELL;
-        // }
     }
 
     checkFill[hash] = fill;
@@ -577,5 +501,63 @@ __global__ void distanceFieldRefine(int * checkFill, int2 * atomHashIndex, int3 
         newresult =  PROBERADIUS - minDist;
 
     gridValues[hash] = newresult;
+
+}
+
+__global__ void filterNotInSphere(float4 sphereInclusion, int * checkFill,
+                                  float4 originGridNeighborDDx,
+                                  int3 gridDimSES,
+                                  int3 sliceGridDimSES,
+                                  float4 originGridSESDx,
+                                  float *gridValues,
+                                  int3 offsetGrid)  {
+
+    // Get global position in X direction
+    unsigned int i = (threadIdx.x + blockIdx.x * blockDim.x);
+    // Get global position in Y direction
+    unsigned int j = (threadIdx.y + blockIdx.y * blockDim.y);
+    // Get global position in Z direction
+    unsigned int k = (threadIdx.z + blockIdx.z * blockDim.z);
+
+    int3 ijk = make_int3(i, j, k);
+
+    if (i >= sliceGridDimSES.x)
+        return;
+    if (j >= sliceGridDimSES.y)
+        return;
+    if (k >= sliceGridDimSES.z)
+        return;
+
+
+
+    int hash = flatten3DTo1D(ijk, sliceGridDimSES);
+
+    // if(hash >= sliceNb)
+    //     return;
+
+
+    int3 ijkOffset = make_int3(i + offsetGrid.x, j + offsetGrid.y, k + offsetGrid.z);
+    int hashOffset = flatten3DTo1D(ijkOffset, gridDimSES);
+
+    if (ijkOffset.x >= gridDimSES.x)
+        return;
+    if (ijkOffset.y >= gridDimSES.y)
+        return;
+    if (ijkOffset.z >= gridDimSES.z)
+        return;
+
+
+    float3 originGridNeighbor = make_float3(originGridNeighborDDx.x, originGridNeighborDDx.y, originGridNeighborDDx.z);
+    float dxSES = originGridSESDx.w;
+
+    float3 spacePos3DCellSES = gridToSpace(ijkOffset, originGridNeighbor, dxSES);
+
+    float3 sphereCenter = make_float3(sphereInclusion.x, sphereInclusion.y, sphereInclusion.z);
+
+    float dist = fast_distance(spacePos3DCellSES, sphereCenter);
+
+    if(dist > sphereInclusion.w){
+        gridValues[hash] = OUTSIDE;
+    }
 
 }

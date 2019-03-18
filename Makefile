@@ -3,8 +3,8 @@ CC=nvcc
 NVCCFLAGS=-use_fast_math -O3
 CFLAGS=-O3
 
-QuickSES: CudaSurf.o cpdb/cpdb.o cpdb/utils.o SmoothMesh.o
-	$(CC) -o QuickSES $(CFLAGS) cpdb/cpdb.o cpdb/utils.o SmoothMesh.o CudaSurf.o
+EpockGPU: CudaSurf.o cpdb/cpdb.o cpdb/utils.o SmoothMesh.o
+	$(CC) -o EpockGPU $(CFLAGS) cpdb/cpdb.o cpdb/utils.o SmoothMesh.o CudaSurf.o
 
 
 CudaSurf.o: CudaSurf.cu
@@ -22,8 +22,8 @@ cpdb/cpdb.o: cpdb/cpdb.cpp
 
 
 clean:
-	rm -f *.o QuickSES
+	rm -f *.o EpockGPU
 	rm -f cpdb/*.o
 
 
-#nvcc --shared CudaSurf.cu cpdb/*.cpp -Icpdb/ SmoothMesh.cpp -o QuickSES.dll -use_fast_math -O3 --compiler-options "-fPIC"
+#nvcc --shared CudaSurf.cu cpdb/*.cpp -Icpdb/ SmoothMesh.cpp -o EpockGPU.dll -use_fast_math -O3 --compiler-options "-fPIC"
