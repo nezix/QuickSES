@@ -147,6 +147,14 @@ __global__ void memsetCudaInt2(int2 *data, int2 val, int N) {
     }
     data[index] = val;
 }
+__global__ void memsetCudaUInt2(uint2 *data, uint2 val, int N) {
+    unsigned int index = blockDim.x * blockIdx.x + threadIdx.x;
+    
+    if (index >= N) {
+        return;
+    }
+    data[index] = val;
+}
 __host__ __device__ int3 spaceToGrid(float3 pos3D, float3 originGrid, float dx) {
     float3 tmp = ((pos3D - originGrid) / dx);
     return make_int3(tmp.x, tmp.y, tmp.z);
@@ -386,13 +394,13 @@ inline __host__ __device__ float computeInOrOut(int3 id3DNeigh, int2 *cellStartE
     float result = PROBERADIUS;
     bool nearProbe = false;
 
-#pragma unroll
+// #pragma unroll
     for (int x = -1; x <= 1; x++) {
         curgridId.x = clamp(id3DNeigh.x + x, 0, gridDimNeighbor.x - 1);
-#pragma unroll
+// #pragma unroll
         for (int y = -1; y <= 1; y++) {
             curgridId.y = clamp(id3DNeigh.y + y, 0, gridDimNeighbor.x - 1);
-#pragma unroll
+// #pragma unroll
             for (int z = -1; z <= 1; z++) {
                 curgridId.z = clamp(id3DNeigh.z + z, 0, gridDimNeighbor.x - 1);
 
@@ -577,5 +585,120 @@ __global__ void distanceFieldRefine(int * checkFill, int2 * atomHashIndex, int3 
         newresult =  PROBERADIUS - minDist;
 
     gridValues[hash] = newresult;
+
+}
+
+inline __host__ __device__ int computeClosestAtom(float3 vert, int3 id3DNeigh, int2 *cellStartEnd, float4 *sorted_xyzr, int3 gridDimNeighbor) {
+
+
+    int closestId = -1;
+    float minD = 999999.0f;
+    int3 curgridId;
+// #pragma unroll
+    for (int x = -1; x <= 1; x++) {
+        curgridId.x = clamp(id3DNeigh.x + x, 0, gridDimNeighbor.x - 1);
+// #pragma unroll
+        for (int y = -1; y <= 1; y++) {
+            curgridId.y = clamp(id3DNeigh.y + y, 0, gridDimNeighbor.x - 1);
+// #pragma unroll
+            for (int z = -1; z <= 1; z++) {
+                curgridId.z = clamp(id3DNeigh.z + z, 0, gridDimNeighbor.x - 1);
+
+                int neighcellhash = flatten3DTo1D(curgridId, gridDimNeighbor);
+                int idStart = cellStartEnd[neighcellhash].x;
+                int idStop = cellStartEnd[neighcellhash].y;
+
+                if (idStart < EMPTYCELL) {
+                    for (int id = idStart; id < idStop; id++) {
+                        float4 xyzr = sorted_xyzr[id];
+                        float3 pos = make_float3(xyzr.x, xyzr.y, xyzr.z);
+                        // float d = sqr_distance(pos, vert);
+                        float d = fast_distance(pos, vert);
+                        if(d < minD){
+                            minD = d;
+                            closestId = id;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return closestId;
+
+
+}
+
+__global__ void closestAtomPerVertex(int *atomIdPerVert, float3 *vertices, unsigned int Nvert, int3 gridDimNeighbor,
+                                    float4 originGridNeighborDDx,
+                                    float4 originGridSESDx, int2 * cellStartEnd, float4 * sorted_xyzr) {
+
+    int id = (threadIdx.x + blockIdx.x * blockDim.x);
+
+    if(id >= Nvert)
+        return;
+
+    float3 vert = vertices[id];
+
+    float3 originGridNeighbor = make_float3(originGridNeighborDDx.x, originGridNeighborDDx.y, originGridNeighborDDx.z);
+    float dxNeighbor = originGridNeighborDDx.w;
+
+    int3 gridPos3DCellNeighbor = spaceToGrid(vert, originGridNeighbor, dxNeighbor);
+
+    atomIdPerVert[id] = computeClosestAtom(vert, gridPos3DCellNeighbor, cellStartEnd, sorted_xyzr, gridDimNeighbor);
+}
+
+__global__ void resetGridValuesSlice(const int3 offset, const int rangeSearchRefine, const int3 sliceGridDimSES, float *gridValues){
+
+    // Get global position in X direction
+    unsigned int i = (threadIdx.x + blockIdx.x * blockDim.x);
+    // Get global position in Y direction
+    unsigned int j = (threadIdx.y + blockIdx.y * blockDim.y);
+    // Get global position in Z direction
+    unsigned int k = (threadIdx.z + blockIdx.z * blockDim.z);
+
+    int3 ijk = make_int3(i, j, k);
+
+    if (i >= sliceGridDimSES.x - 1)
+        return;
+    if (j >= sliceGridDimSES.y - 1)
+        return;
+    if (k >= sliceGridDimSES.z - 1)
+        return;
+
+
+    int hash = flatten3DTo1D(ijk, sliceGridDimSES);
+
+    if(i >= sliceGridDimSES.x - rangeSearchRefine)
+        gridValues[hash] = PROBERADIUS;
+    if(j >= sliceGridDimSES.y - rangeSearchRefine)
+        gridValues[hash] = PROBERADIUS;
+    if(k >= sliceGridDimSES.z - rangeSearchRefine)
+        gridValues[hash] = PROBERADIUS;
+
+    if(offset.x != 0){
+        if(i < rangeSearchRefine)
+            gridValues[hash] = PROBERADIUS;
+    }
+    else{
+        if(i >= sliceGridDimSES.x - rangeSearchRefine * 2)
+            gridValues[hash] = PROBERADIUS;
+    }
+    if(offset.y != 0){
+        if(j < rangeSearchRefine)
+            gridValues[hash] = PROBERADIUS;
+    }
+    else{
+        if(j >= sliceGridDimSES.y - rangeSearchRefine * 2)
+            gridValues[hash] = PROBERADIUS;
+    }
+    if(offset.z != 0){
+        if(k < rangeSearchRefine)
+            gridValues[hash] = PROBERADIUS;
+    }
+    else{
+        if(k >= sliceGridDimSES.z - rangeSearchRefine * 2)
+            gridValues[hash] = PROBERADIUS;
+    }
+
 
 }

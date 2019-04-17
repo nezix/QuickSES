@@ -401,195 +401,212 @@ __device__ inline unsigned int to1D(uint3 ids, int3 dim) {
 	return (dim.y * dim.z * ids.x) + (dim.z * ids.y) + ids.z;
 }
 
-__global__ void MCkernel(float isovalue, int3 dim, float* data, float3* vertex, int* triangle, int3 offset, unsigned int nbcells)
-{
+// __global__ void MCkernel(float isovalue, int3 dim, float* data, float3* vertex, int* triangle, int3 offset, unsigned int nbcells)
+// {
 
 
-	unsigned int i = (blockIdx.x * blockDim.x + threadIdx.x) + offset.x;
-	unsigned int j = (blockIdx.y * blockDim.y + threadIdx.y) + offset.y;
-	unsigned int k = (blockIdx.z * blockDim.z + threadIdx.z) + offset.z;
+// 	unsigned int i = (blockIdx.x * blockDim.x + threadIdx.x) + offset.x;
+// 	unsigned int j = (blockIdx.y * blockDim.y + threadIdx.y) + offset.y;
+// 	unsigned int k = (blockIdx.z * blockDim.z + threadIdx.z) + offset.z;
 
-	if (i >= dim.x - 1)
-		return;
-	if (j >= dim.y - 1)
-		return;
-	if (k >= dim.z - 1)
-		return;
-
-
-	//Variables
-	point voxels[8];
-	float3 vertlist[12];
-	int index[8];
-	int cubeIndex = 0;
-	float3 vertices[MAX_VERTEX];
-	int numTriangles = 0;
-	int numVertices = 0;
+// 	if (i >= dim.x - 1)
+// 		return;
+// 	if (j >= dim.y - 1)
+// 		return;
+// 	if (k >= dim.z - 1)
+// 		return;
 
 
-	index[0] = to1D(make_int3(i, j, k), dim);
-	index[1] = to1D(make_int3(i + 1, j, k), dim);
-	index[2] = to1D(make_int3(i + 1, j + 1, k), dim);
-	index[3] = to1D(make_int3(i, j + 1, k), dim);
-	index[4] = to1D(make_int3(i, j, k + 1), dim);
-	index[5] = to1D(make_int3(i + 1, j, k + 1), dim);
-	index[6] = to1D(make_int3(i + 1, j + 1, k + 1), dim);
-	index[7] = to1D(make_int3(i, j + 1, k + 1), dim);
-
-	voxels[0].xyz.x = i;
-	voxels[0].xyz.y = j;
-	voxels[0].xyz.z = k;
-	voxels[0].val = data[index[0]];
-
-	voxels[1].xyz.x = i + 1;
-	voxels[1].xyz.y = j;
-	voxels[1].xyz.z = k;
-	voxels[1].val = data[index[1]];
+// 	//Variables
+// 	point voxels[8];
+// 	float3 vertlist[12];
+// 	int index[8];
+// 	int cubeIndex = 0;
+// 	float3 vertices[MAX_VERTEX];
+// 	int numTriangles = 0;
+// 	int numVertices = 0;
 
 
-	voxels[2].xyz.x = i + 1;
-	voxels[2].xyz.y = j + 1;
-	voxels[2].xyz.z = k;
-	voxels[2].val = data[index[2]];
+// 	index[0] = to1D(make_int3(i, j, k), dim);
+// 	index[1] = to1D(make_int3(i + 1, j, k), dim);
+// 	index[2] = to1D(make_int3(i + 1, j + 1, k), dim);
+// 	index[3] = to1D(make_int3(i, j + 1, k), dim);
+// 	index[4] = to1D(make_int3(i, j, k + 1), dim);
+// 	index[5] = to1D(make_int3(i + 1, j, k + 1), dim);
+// 	index[6] = to1D(make_int3(i + 1, j + 1, k + 1), dim);
+// 	index[7] = to1D(make_int3(i, j + 1, k + 1), dim);
 
-	voxels[3].xyz.x = i;
-	voxels[3].xyz.y = j + 1;
-	voxels[3].xyz.z = k;
-	voxels[3].val = data[index[3]];
+// 	voxels[0].xyz.x = i;
+// 	voxels[0].xyz.y = j;
+// 	voxels[0].xyz.z = k;
+// 	voxels[0].val = data[index[0]];
 
-	voxels[4].xyz.x = i;
-	voxels[4].xyz.y = j;
-	voxels[4].xyz.z = k + 1;
-	voxels[4].val = data[index[4]];
-
-	voxels[5].xyz.x = i + 1;
-	voxels[5].xyz.y = j;
-	voxels[5].xyz.z = k + 1;
-	voxels[5].val = data[index[5]];
-
-	voxels[6].xyz.x = i + 1;
-	voxels[6].xyz.y = j + 1;
-	voxels[6].xyz.z = k + 1;
-	voxels[6].val = data[index[6]];
-
-	voxels[7].xyz.x = i;
-	voxels[7].xyz.y = j + 1;
-	voxels[7].xyz.z = k + 1;
-	voxels[7].val = data[index[7]];
+// 	voxels[1].xyz.x = i + 1;
+// 	voxels[1].xyz.y = j;
+// 	voxels[1].xyz.z = k;
+// 	voxels[1].val = data[index[1]];
 
 
-	//PolygoniseCube
-	if (voxels[0].val < isovalue) cubeIndex |= 1;
-	if (voxels[1].val < isovalue) cubeIndex |= 2;
-	if (voxels[2].val < isovalue) cubeIndex |= 4;
-	if (voxels[3].val < isovalue) cubeIndex |= 8;
-	if (voxels[4].val < isovalue) cubeIndex |= 16;
-	if (voxels[5].val < isovalue) cubeIndex |= 32;
-	if (voxels[6].val < isovalue) cubeIndex |= 64;
-	if (voxels[7].val < isovalue) cubeIndex |= 128;
+// 	voxels[2].xyz.x = i + 1;
+// 	voxels[2].xyz.y = j + 1;
+// 	voxels[2].xyz.z = k;
+// 	voxels[2].val = data[index[2]];
+
+// 	voxels[3].xyz.x = i;
+// 	voxels[3].xyz.y = j + 1;
+// 	voxels[3].xyz.z = k;
+// 	voxels[3].val = data[index[3]];
+
+// 	voxels[4].xyz.x = i;
+// 	voxels[4].xyz.y = j;
+// 	voxels[4].xyz.z = k + 1;
+// 	voxels[4].val = data[index[4]];
+
+// 	voxels[5].xyz.x = i + 1;
+// 	voxels[5].xyz.y = j;
+// 	voxels[5].xyz.z = k + 1;
+// 	voxels[5].val = data[index[5]];
+
+// 	voxels[6].xyz.x = i + 1;
+// 	voxels[6].xyz.y = j + 1;
+// 	voxels[6].xyz.z = k + 1;
+// 	voxels[6].val = data[index[6]];
+
+// 	voxels[7].xyz.x = i;
+// 	voxels[7].xyz.y = j + 1;
+// 	voxels[7].xyz.z = k + 1;
+// 	voxels[7].val = data[index[7]];
 
 
-	//Getting edges
-	unsigned int edges = edgeTable[cubeIndex];
-
-	//Comparing edges with 12 bit by and operation and position coordinate
-	if (edges == 0) {
-		return;
-	}
-	if (edges & 1) {
-		vertlist[0] = linearInterpolation(isovalue, voxels[0], voxels[1]);
-	}
-	if (edges & 2) {
-		vertlist[1] = linearInterpolation(isovalue, voxels[1], voxels[2]);
-	}
-	if (edges & 4) {
-		vertlist[2] = linearInterpolation(isovalue, voxels[2], voxels[3]);
-	}
-	if (edges & 8) {
-		vertlist[3] = linearInterpolation(isovalue, voxels[3], voxels[0]);
-	}
-	if (edges & 16) {
-		vertlist[4] = linearInterpolation(isovalue, voxels[4], voxels[5]);
-	}
-	if (edges & 32) {
-		vertlist[5] = linearInterpolation(isovalue, voxels[5], voxels[6]);
-	}
-	if (edges & 64) {
-		vertlist[6] = linearInterpolation(isovalue, voxels[6], voxels[7]);
-	}
-	if (edges & 128) {
-		vertlist[7] = linearInterpolation(isovalue, voxels[7], voxels[4]);
-	}
-	if (edges & 256) {
-		vertlist[8] = linearInterpolation(isovalue, voxels[0], voxels[4]);
-	}
-	if (edges & 512) {
-		vertlist[9] = linearInterpolation(isovalue, voxels[1], voxels[5]);
-	}
-	if (edges & 1024) {
-		vertlist[10] = linearInterpolation(isovalue, voxels[2], voxels[6]);
-	}
-	if (edges & 2048) {
-		vertlist[11] = linearInterpolation(isovalue, voxels[3], voxels[7]);
-	}
-
-	if (cubeIndex >= 0 && cubeIndex < 256 ) {
-		for (int i = 0; i < nbTriTable[cubeIndex]; i += 3) {
-			if (triTable[cubeIndex][i] == -1 || numVertices + 3 >= MAX_VERTEX)
-				break;
-			vertices[numVertices++] = vertlist[triTable[cubeIndex][i]];
-			vertices[numVertices++] = vertlist[triTable[cubeIndex][i + 1]];
-			vertices[numVertices++] = vertlist[triTable[cubeIndex][i + 2]];
-			++numTriangles;
-		}
-	}
-
-	// for (int n = 0; n < MAX_VERTEX; n += 3)
-	// {
-	// 	int edgeNumber = triTable[cubeIndex][n];
-	// 	if (edgeNumber < 0)
-	// 		break;
-
-	// 	vertices[numVertices++] = pos[edgeNumber];
-	// 	vertices[numVertices++] = pos[triTable[cubeIndex][n + 1]];
-	// 	vertices[numVertices++] = pos[triTable[cubeIndex][n + 2]];
-	// 	++numTriangles;
-	// }
-
-	//Getting the number of triangles
-	triangle[index[0]] = numTriangles;
-
-	//Vertex List
-	for (int n = 0; n < min(numVertices, MAX_VERTEX); ++n) {
-		vertex[MAX_VERTEX * index[0] + n] = vertices[n];
-	}
-}
+// 	//PolygoniseCube
+// 	if (voxels[0].val < isovalue) cubeIndex |= 1;
+// 	if (voxels[1].val < isovalue) cubeIndex |= 2;
+// 	if (voxels[2].val < isovalue) cubeIndex |= 4;
+// 	if (voxels[3].val < isovalue) cubeIndex |= 8;
+// 	if (voxels[4].val < isovalue) cubeIndex |= 16;
+// 	if (voxels[5].val < isovalue) cubeIndex |= 32;
+// 	if (voxels[6].val < isovalue) cubeIndex |= 64;
+// 	if (voxels[7].val < isovalue) cubeIndex |= 128;
 
 
+// 	//Getting edges
+// 	unsigned int edges = edgeTable[cubeIndex];
+
+// 	//Comparing edges with 12 bit by and operation and position coordinate
+// 	if (edges == 0) {
+// 		return;
+// 	}
+// 	if (edges & 1) {
+// 		vertlist[0] = linearInterpolation(isovalue, voxels[0], voxels[1]);
+// 	}
+// 	if (edges & 2) {
+// 		vertlist[1] = linearInterpolation(isovalue, voxels[1], voxels[2]);
+// 	}
+// 	if (edges & 4) {
+// 		vertlist[2] = linearInterpolation(isovalue, voxels[2], voxels[3]);
+// 	}
+// 	if (edges & 8) {
+// 		vertlist[3] = linearInterpolation(isovalue, voxels[3], voxels[0]);
+// 	}
+// 	if (edges & 16) {
+// 		vertlist[4] = linearInterpolation(isovalue, voxels[4], voxels[5]);
+// 	}
+// 	if (edges & 32) {
+// 		vertlist[5] = linearInterpolation(isovalue, voxels[5], voxels[6]);
+// 	}
+// 	if (edges & 64) {
+// 		vertlist[6] = linearInterpolation(isovalue, voxels[6], voxels[7]);
+// 	}
+// 	if (edges & 128) {
+// 		vertlist[7] = linearInterpolation(isovalue, voxels[7], voxels[4]);
+// 	}
+// 	if (edges & 256) {
+// 		vertlist[8] = linearInterpolation(isovalue, voxels[0], voxels[4]);
+// 	}
+// 	if (edges & 512) {
+// 		vertlist[9] = linearInterpolation(isovalue, voxels[1], voxels[5]);
+// 	}
+// 	if (edges & 1024) {
+// 		vertlist[10] = linearInterpolation(isovalue, voxels[2], voxels[6]);
+// 	}
+// 	if (edges & 2048) {
+// 		vertlist[11] = linearInterpolation(isovalue, voxels[3], voxels[7]);
+// 	}
+
+// 	if (cubeIndex >= 0 && cubeIndex < 256 ) {
+// 		for (int i = 0; i < nbTriTable[cubeIndex]; i += 3) {
+// 			if (triTable[cubeIndex][i] == -1 || numVertices + 3 >= MAX_VERTEX)
+// 				break;
+// 			vertices[numVertices++] = vertlist[triTable[cubeIndex][i]];
+// 			vertices[numVertices++] = vertlist[triTable[cubeIndex][i + 1]];
+// 			vertices[numVertices++] = vertlist[triTable[cubeIndex][i + 2]];
+// 			++numTriangles;
+// 		}
+// 	}
+
+// 	// for (int n = 0; n < MAX_VERTEX; n += 3)
+// 	// {
+// 	// 	int edgeNumber = triTable[cubeIndex][n];
+// 	// 	if (edgeNumber < 0)
+// 	// 		break;
+
+// 	// 	vertices[numVertices++] = pos[edgeNumber];
+// 	// 	vertices[numVertices++] = pos[triTable[cubeIndex][n + 1]];
+// 	// 	vertices[numVertices++] = pos[triTable[cubeIndex][n + 2]];
+// 	// 	++numTriangles;
+// 	// }
+
+// 	//Getting the number of triangles
+// 	triangle[index[0]] = numTriangles;
+
+// 	//Vertex List
+// 	for (int n = 0; n < min(numVertices, MAX_VERTEX); ++n) {
+// 		vertex[MAX_VERTEX * index[0] + n] = vertices[n];
+// 	}
+// }
 
 
-__global__ void countVertexPerCell(const float isovalue, const int3 dim, const float* data, uint2 *vertPerCell) {
+
+
+__global__ void countVertexPerCell(const float isovalue, const int3 dim, const float* data, uint2 *vertPerCell, const int rangeSearch, const int3 offset) {
 
 
 	unsigned int i = (blockIdx.x * blockDim.x + threadIdx.x);
 	unsigned int j = (blockIdx.y * blockDim.y + threadIdx.y);
 	unsigned int k = (blockIdx.z * blockDim.z + threadIdx.z);
 
-	if (i >= dim.x)
+	if (i > dim.x - 2)
 		return;
-	if (j >= dim.y)
+	if (j > dim.y - 2)
 		return;
-	if (k >= dim.z)
+	if (k > dim.z - 2)
+		return;
+
+	if(offset.x != 0 && i < rangeSearch - 3)
+		return;
+	if(offset.y != 0 && j < rangeSearch - 3)
+		return;
+	if(offset.z != 0 && k < rangeSearch - 3)
+		return;
+
+	if(offset.x == 0 && i >= dim.x - rangeSearch * 2 - 1)
+		return;
+	if(offset.y == 0 && j >= dim.y - rangeSearch * 2 - 1)
+		return;
+	if(offset.z == 0 && k >= dim.z - rangeSearch * 2 - 1)
+		return;
+
+	if(i >= dim.x - rangeSearch - 1)
+		return;
+	if(j >= dim.y - rangeSearch - 1)
+		return;
+	if(k >= dim.z - rangeSearch - 1)
 		return;
 
 
 	unsigned int id = to1D(make_int3(i, j, k), dim);
 	uint2 Nverts = make_uint2(0, 0);
 
-	if (i > (dim.x - 2) || j > (dim.y - 2) || k > (dim.z - 2)) {
-		vertPerCell[id] = Nverts;
-		return;
-	}
 
 	float voxel0;
 	float voxel1;
@@ -643,7 +660,7 @@ __global__ void countVertexPerCell(const float isovalue, const int3 dim, const f
 __global__ void compactVoxels(unsigned int * compactedVoxelArray,
                               const uint2 *voxelOccupied,
                               unsigned int lastVoxel, unsigned int numVoxels,
-                              unsigned int numVoxelsp1, int3 dim)
+                              unsigned int numVoxelsp1, int3 dim, const int rangeSearch, const int3 offset)
 {
 
 
@@ -651,12 +668,40 @@ __global__ void compactVoxels(unsigned int * compactedVoxelArray,
 	unsigned int j = (blockIdx.y * blockDim.y + threadIdx.y);
 	unsigned int k = (blockIdx.z * blockDim.z + threadIdx.z);
 
-	if (i >= dim.x)
+	if (i > dim.x - 2)
 		return;
-	if (j >= dim.y)
+	if (j > dim.y - 2)
 		return;
-	if (k >= dim.z)
+	if (k > dim.z - 2)
 		return;
+
+	if(offset.x != 0 && i < rangeSearch - 3)
+		return;
+	if(offset.y != 0 && j < rangeSearch - 3)
+		return;
+	if(offset.z != 0 && k < rangeSearch - 3)
+		return;
+
+	if(offset.x == 0 && i >= dim.x - rangeSearch * 2 - 1)
+		return;
+	if(offset.y == 0 && j >= dim.y - rangeSearch * 2 - 1)
+		return;
+	if(offset.z == 0 && k >= dim.z - rangeSearch * 2 - 1)
+		return;
+
+	if(i >= dim.x - rangeSearch - 1)
+		return;
+	if(j >= dim.y - rangeSearch - 1)
+		return;
+	if(k >= dim.z - rangeSearch - 1)
+		return;
+
+	// if (i >= dim.x)
+	// 	return;
+	// if (j >= dim.y)
+	// 	return;
+	// if (k >= dim.z)
+	// 	return;
 
 
 	unsigned int id = to1D(make_int3(i, j, k), dim);

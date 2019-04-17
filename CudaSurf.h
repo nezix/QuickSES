@@ -76,9 +76,8 @@ extern "C" {
 
     API void API_computeSES(float resoSES, float3 *atomPos, float *atomRad, unsigned int N, float3 *out_vertices,
         unsigned int *NVert, int *out_triangles, unsigned int *NTri, int doSmoothing);
-    API void API_freeMesh(float3 *verts, int *tris);
     API int* API_getTriangles(bool invertTriangles);
     API float3 *API_getVertices();
-    API void API_freeVertices();
-    API void API_freeTriangles();
+    API void API_freeMesh();
+    API int *API_getAtomIdPerVert();
 }

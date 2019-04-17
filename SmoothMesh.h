@@ -30,6 +30,7 @@ struct MeshData
     int NTriangles = 0;
     float3 *vertices;
     int3 *triangles;
+    int *atomIdPerVert;
     // std::vector<float3> normals;
     // std::vector<float4> colors;
 };
