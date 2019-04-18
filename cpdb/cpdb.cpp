@@ -86,7 +86,8 @@ int parsePDB (char *pdbFilePath, pdb *P , char *options) {
             getAtomType(line, atomType);
             getResType(line, resType);
             getAtomElement(line, atomElement);
-            getAtomId(line, &atomId);
+            // getAtomId(line, &atomId);
+            atomId = atomIdx;
 
             getResidueId(line, &resId);
             getChainId(line, &chainId);
