@@ -59,9 +59,8 @@ SOFTWARE.
 
 using namespace std;
 
-
 int SLICE = 300;
-float probeRadius = 1.4f;
+float probeRadius = PROBERADIUS;
 float gridResolutionNeighbor;
 float gridResolutionSES = 0.5f;
 int laplacianSmoothSteps = 1;
@@ -269,7 +268,9 @@ void writeToObj(const string &fileName, const vector<int> &meshTriSizes, const v
     for (int m = 0; m < meshTriSizes.size(); m++) {
         int ntri = meshTriSizes[m];
         for (int i = 0; i < ntri; i++) {
-            fprintf(fptr, "f %d %d %d\n", cumulMesh + AllTriangles[m][i].y + 1, cumulMesh + AllTriangles[m][i].x + 1, cumulMesh + AllTriangles[m][i].z + 1);
+            if(AllTriangles[m][i].x != AllTriangles[m][i].y && AllTriangles[m][i].x != AllTriangles[m][i].z && AllTriangles[m][i].y != AllTriangles[m][i].z){
+                fprintf(fptr, "f %d %d %d\n", cumulMesh + AllTriangles[m][i].y + 1, cumulMesh + AllTriangles[m][i].x + 1, cumulMesh + AllTriangles[m][i].z + 1);
+            }
         }
         cumulMesh += meshVertSizes[m];
     }
@@ -329,7 +330,7 @@ void writeToObj(const string &fileName, std::vector<MeshData> meshes) {
 
         for (int i = 0; i < mesh.NVertices; i++) {
             float3 vert = mesh.vertices[i];
-            fprintf(fptr, "v %.3f %.3f %.3f %.3f %.3f %.3f\n", vert.x, vert.y, vert.z, m /(float) meshes.size(), m /(float) meshes.size(), 1.0f );
+            fprintf(fptr, "v %.3f %.3f %.3f\n", vert.x, vert.y, vert.z );
         }
     }
     fprintf(fptr, "\n");
@@ -347,11 +348,11 @@ void writeToObj(const string &fileName, std::vector<MeshData> meshes) {
 #endif
 }
 
-
 MeshData computeMarchingCubes(int3 sliceGridSESDim, int cutMC, int sliceNbCellSES, float *cudaGridValues, uint2* vertPerCell,
                               unsigned int *compactedVoxels, int3 gridSESDim, float4 originGridSESDx, int3 offset, float4 *cudaSortedAtomPosRad,
                               int2 *cellStartEnd, int3 gridNeighborDim, float4 originGridNeighborDx, int rangeSearchRefine) {
     
+    unsigned long int memAlloc = 0;
     memsetCudaUInt2 <<< (sliceNbCellSES + NBTHREADS - 1) / NBTHREADS, NBTHREADS >>> (vertPerCell, make_uint2(0, 0), sliceNbCellSES);
 
     MeshData result;
@@ -378,6 +379,7 @@ MeshData computeMarchingCubes(int3 sliceGridSESDim, int cutMC, int sliceNbCellSE
 
     float3 *cudaVertices;
     gpuErrchk(cudaMalloc(&cudaVertices, sizeof(float3) * totalVerts));
+    memAlloc += sizeof(float3) * totalVerts;
 
     globalWorkSize = dim3( (sliceGridSESDim.x + localWorkSize.x - 1) / localWorkSize.x, (sliceGridSESDim.y + localWorkSize.y - 1) / localWorkSize.y, (sliceGridSESDim.z + localWorkSize.z - 1) / localWorkSize.z );
 
@@ -407,8 +409,10 @@ MeshData computeMarchingCubes(int3 sliceGridSESDim, int cutMC, int sliceNbCellSE
 
     gpuErrchk(cudaMalloc(&vertOri, sizeof(float3) * totalVerts));
     gpuErrchk(cudaMemcpy(vertOri, cudaVertices, sizeof(float3) * totalVerts, cudaMemcpyDeviceToDevice));
-
     gpuErrchk(cudaMalloc(&cudaTri, sizeof(int) * totalVerts));
+
+    memAlloc += sizeof(float3) * totalVerts;
+    memAlloc += sizeof(int) * totalVerts;
     
 
     thrust::device_ptr<float3> vertThrust(cudaVertices);
@@ -424,6 +428,7 @@ MeshData computeMarchingCubes(int3 sliceGridSESDim, int cutMC, int sliceNbCellSE
     gpuErrchk( cudaPeekAtLastError() );
 
     gpuErrchk(cudaMalloc(&cudaAtomIdPerVert, sizeof(int) * newtotalVerts));
+    memAlloc += sizeof(int) * newtotalVerts;
 
     global = (unsigned int )ceil((newtotalVerts + NBTHREADS - 1) / NBTHREADS);
 
@@ -434,6 +439,7 @@ MeshData computeMarchingCubes(int3 sliceGridSESDim, int cutMC, int sliceNbCellSE
     gpuErrchk( cudaPeekAtLastError() );
 
 
+    cerr << "MC allocation = "<< memAlloc / 1000000.0f << " Mo" << endl;
 
 
     int Ntriangles = totalVerts / 3;
@@ -479,6 +485,7 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
 
     getMinMax(positions, radii, N, &minVal, &maxVal, &maxAtomRad);
 
+    cerr << "#atoms : "<<N<<endl;
     if (N <= 1) {
         cerr << "Failed to parse the PDB or empty PDB file" << endl;
         return resultMeshes;
@@ -592,7 +599,8 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
 
     gpuErrchk( cudaPeekAtLastError() );
 
-    // cerr << "Allocating " << (sizeof(float) * sliceNbCellSES + 3 * sizeof(int) * sliceNbCellSES) / 1000000.0f << " Mo" << endl;
+    cerr << "Allocating " << (( (sizeof(int) + sizeof(float)) * sliceNbCellSES + 3 * sizeof(int) * sliceNbCellSES) +  2 * sizeof(float4) * N +
+                            sizeof(int2) * N + sizeof(int2) * nbcellsNeighbor )/ 1000000.0f << " Mo" << endl;
 
     int3 offset = {0, 0, 0};
     int cut = 8;
@@ -897,6 +905,7 @@ int main(int argc, const char * argv[]) {
 
     std::vector<MeshData> resultMeshes = computeSlicedSES(&atomPos[0], &atomRadii[0], N, gridResolutionSES, laplacianSmoothSteps);
     // std::vector<MeshData> resultMeshes = computeSlicedSESCPU(P);
+
 
     //Write to OBJ
     writeToObj(outputFilePath, resultMeshes);
