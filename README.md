@@ -58,7 +58,7 @@ Pull requests are welcome!
 
 ## Please cite the following paper
 
-(In progress / Paper submitted)
+(In progress / Paper accepted at EuroVis MolVA, DOI to follow)
 
 ## License
 
