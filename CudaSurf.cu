@@ -246,299 +246,6 @@ float computeMaxDist(float3 minVal, float3 maxVal, float maxAtomRad) {
 }
 
 
-/*std::vector<MeshData> computeSlicedSESCPU(pdb *&P) {
-
-    //Record a mesh per slice
-    std::vector<MeshData> resultMeshes;
-
-    float3 minVal, maxVal;
-    float maxAtomRad = 0.0;
-    unsigned int N = getMinMax(P, &minVal, &maxVal, &maxAtomRad);
-
-    if (N <= 1) {
-        cerr << "Failed to parse the PDB or empty PDB file" << endl;
-        return resultMeshes;
-    }
-
-    float4 *atomPosRad = getArrayAtomPosRad(P, N);
-    float maxDist = computeMaxDist(minVal, maxVal, maxAtomRad);
-
-    gridResolutionNeighbor = probeRadius + maxAtomRad;
-
-    //Grid is a cube
-    float3 originGridNeighbor = {
-        minVal.x - maxAtomRad - 2 * probeRadius,
-        minVal.y - maxAtomRad - 2 * probeRadius,
-        minVal.z - maxAtomRad - 2 * probeRadius
-    };
-
-    int gridNeighborSize = (int)ceil(maxDist / gridResolutionNeighbor);
-
-    int3 gridNeighborDim = {gridNeighborSize, gridNeighborSize, gridNeighborSize};
-
-    int gridSESSize = (int)ceil(maxDist / gridResolutionSES);
-
-    int3 gridSESDim = {gridSESSize, gridSESSize, gridSESSize};
-
-    float4 originGridNeighborDx = {
-        originGridNeighbor.x,
-        originGridNeighbor.y,
-        originGridNeighbor.z,
-        gridResolutionNeighbor
-    };
-
-    float4 originGridSESDx = {
-        originGridNeighborDx.x,
-        originGridNeighborDx.y,
-        originGridNeighborDx.z,
-        gridResolutionSES
-    };
-
-    unsigned int nbcellsNeighbor = gridNeighborDim.x * gridNeighborDim.y * gridNeighborDim.z;
-    // unsigned int nbcellsSES = gridSESDim.x * gridSESDim.y * gridSESDim.z;
-
-
-    float4 *cudaSortedAtomPosRad;
-    int2 *cudaHashIndex;
-    int2 *cellStartEnd;
-    float *cudaGridValues;
-    int *cudaFillCheck;
-
-    //Marching cubes data
-    uint2* vertPerCell;
-    unsigned int *compactedVoxels;
-
-
-    cudaSortedAtomPosRad = (float4 *)malloc(sizeof(float4) * N);
-    cudaHashIndex = (int2 *)malloc(sizeof(int2) * N);
-    cellStartEnd = (int2 *)malloc(sizeof(int2) * nbcellsNeighbor);
-
-
-    //-------------- Step 1 : Insert atoms in neighbor cells -----------------
-
-    //hashAtoms
-    for (int i = 0; i < N; i++) {
-        int3 cell = spaceToGrid(make_float3(atomPosRad[i].x, atomPosRad[i].y, atomPosRad[i].z), originGridNeighbor, gridResolutionNeighbor);
-        int hash = flatten3DTo1D(cell, gridNeighborDim);
-        cudaHashIndex[i] = make_int2(hash, i);
-    }
-
-    std::vector<int2> hashindex(cudaHashIndex, cudaHashIndex + N);
-    std::sort(hashindex.begin(), hashindex.end(), compare_int2());
-    cudaHashIndex = hashindex.data();
-
-    for (int i = 0; i < nbcellsNeighbor; i++) {
-        cellStartEnd[i].x = EMPTYCELL;
-        cellStartEnd[i].y = EMPTYCELL;
-    }
-
-    //SortCell
-    for (int i = 0; i < N; i++) {
-        int hash = cudaHashIndex[i].x;
-        int id = cudaHashIndex[i].y;
-
-
-        int hashm1;
-        if (i != 0)
-            hashm1 = cudaHashIndex[i - 1].x;
-        else
-            hashm1 = hash;
-
-
-        if (i == 0 || hash != hashm1) {
-            cellStartEnd[hash].x = i; // set start
-            if (i > 0)
-                cellStartEnd[hashm1].y = i; // set end
-        }
-
-        if (i == N - 1) {
-            cellStartEnd[hash].y = i + 1; // set end
-        }
-
-        // Reorder atoms according to sorted indices
-        cudaSortedAtomPosRad[i] = atomPosRad[id];
-    }
-
-
-    // //-------------- Step 2 : Compute points of the grid outside or inside the surface -----------------
-    // //Use slices of the grid to avoid allocating large amount of data
-    int rangeSearchRefine = (int)ceil(PROBERADIUS / gridResolutionSES);
-    int sliceSmallSize = min(SLICE , gridSESSize);
-    int sliceSize = min(SLICE + 2 * rangeSearchRefine, gridSESSize);
-    int sliceSmallNbCellSES = sliceSmallSize * sliceSmallSize * sliceSmallSize;
-    int sliceNbCellSES = sliceSize * sliceSize * sliceSize;
-    int3 sliceGridSESDim = make_int3(sliceSmallSize, sliceSmallSize, sliceSmallSize);
-    int3 fullSliceGridSESDim = make_int3(sliceSize, sliceSize, sliceSize);
-
-    cudaGridValues = (float *)malloc(sizeof(float) * sliceNbCellSES);
-    cudaFillCheck = (int *)malloc(sizeof(int) * sliceNbCellSES);
-
-    vertPerCell = (uint2 *)malloc(sizeof(uint2) * sliceNbCellSES);
-    compactedVoxels = (unsigned int *)malloc(sizeof(unsigned int) * sliceNbCellSES);
-
-    cerr << "Allocating " << (sizeof(float) * sliceNbCellSES + 3 * sizeof(int) * sliceNbCellSES) / 1000000.0f << " Mo" << endl;
-
-    int3 offset = {0, 0, 0};
-    int cut = 8;
-
-    // cerr << "Full size grid = " << gridSESSize << " x " << gridSESSize << " x " << gridSESSize << endl;
-    // // cudaEventRecord(start);
-    // // for (int slice = 0; slice < gridSESSize; slice += sliceSmallSize) {
-    for (int i = 0; i < gridSESSize; i += sliceSmallSize) {
-        offset.x = i;
-        for (int j = 0; j < gridSESSize; j += sliceSmallSize) {
-            offset.y = j;
-            for (int k = 0; k < gridSESSize; k += sliceSmallSize) {
-                offset.z = k;
-
-                for (int a = 0; a < sliceNbCellSES; a++) {
-                    cudaGridValues[a] = probeRadius;
-                    cudaFillCheck[a] = EMPTYCELL;
-                }
-                int3 reducedOffset = make_int3(max(0, offset.x - rangeSearchRefine),
-                                               max(0, offset.y - rangeSearchRefine),
-                                               max(0, offset.z - rangeSearchRefine));
-
-                cerr << " ============== " << "offset = " << offset.x << "/" << offset.y << "/" << offset.z << " |  slice size = " << fullSliceGridSESDim.x << " ============== " << endl;
-                for (int x = 0; x < sliceSize; x++) {
-                    for (int y = 0; y < sliceSize; y++) {
-                        for (int z = 0; z < sliceSize; z++) {
-                            int3 ijk = make_int3(x, y, z);
-                            // unsigned int hash = flatten3DTo1D(ijk, sliceGridSESDim);
-                            unsigned int hash = flatten3DTo1D(ijk, fullSliceGridSESDim);
-
-
-                            if (x >= sliceSize - 1 || y >= sliceSize - 1 || z >= sliceSize - 1)
-                                continue;
-
-                            int3 ijkOffset = make_int3(x + reducedOffset.x, y + reducedOffset.y, z + reducedOffset.z);
-                            if (ijkOffset.x >= gridSESSize - 1 || ijkOffset.y >= gridSESSize - 1 || ijkOffset.z >= gridSESSize - 1) {
-                                continue;
-                            }
-                            unsigned int hashOffset = flatten3DTo1D(ijkOffset, gridSESDim);
-                            float3 spacePos3DCellSES = gridToSpace(ijkOffset, originGridNeighbor, gridResolutionSES);
-
-                            // id of the current cell in the neighbor grid
-                            int3 gridPos3DCellNeighbor = spaceToGrid(spacePos3DCellSES, originGridNeighbor, gridResolutionNeighbor);
-
-                            float result = computeInOrOut(gridPos3DCellNeighbor, cellStartEnd, cudaSortedAtomPosRad, spacePos3DCellSES, gridResolutionSES, gridNeighborDim);
-
-                            int fill = EMPTYCELL;
-
-                            if (abs(result) < EPSILON) {
-                                fill = hash;
-
-                                if (x < rangeSearchRefine || y < rangeSearchRefine || z < rangeSearchRefine ||
-                                        x > sliceSmallSize + rangeSearchRefine || y > sliceSmallSize + rangeSearchRefine || z > sliceSmallSize + rangeSearchRefine) {
-                                    fill = EMPTYCELL;
-                                }
-                            }
-
-                            cudaFillCheck[hash] = fill;
-                            cudaGridValues[hash] = result;
-
-                        }
-                    }
-                }
-
-                std::vector<int> fillvec(cudaFillCheck, cudaFillCheck + sliceNbCellSES);
-                std::sort(fillvec.begin(), fillvec.end());
-                cudaFillCheck = fillvec.data();
-                int notEmptyCell = 0;
-                for (int a = 0; a < sliceNbCellSES; a++) {
-                    if (cudaFillCheck[a] == EMPTYCELL) {
-                        break;
-                    }
-                    notEmptyCell++;
-                }
-                cerr << "Not empty = " << notEmptyCell << endl;
-
-                //--------Distance refinement
-
-                // for(int ne = 0; ne < notEmptyCell; ne++){
-
-                //     int hashNe = cudaFillCheck[ne];
-                //     int3 ijk = unflatten1DTo3D(hashNe, fullSliceGridSESDim);
-
-                //     const int idSESRangeToSearch = (int)ceil(PROBERADIUS / gridResolutionSES);
-                //     const float pme = PROBERADIUS - EPSILON;
-                //     float minDist = 100000.0f;
-                //     float newresult = -gridResolutionSES;
-
-                //     int3 ijkOffset = make_int3(ijk.x + reducedOffset.x, ijk.y + reducedOffset.y, ijk.z + reducedOffset.z);
-                //     float3 spacePos3DCellSES = gridToSpace(ijkOffset, originGridNeighbor, gridResolutionSES);
-
-
-                //     int3 curgridSESId;
-
-                //         //Find the closest outside SES cell in the range [-probeRadius, +probeRadius]
-                //     // #pragma unroll
-                //         for (int x = -idSESRangeToSearch; x <= idSESRangeToSearch; x++) {
-
-                //             curgridSESId.x = clamp(ijk.x + x , 0, fullSliceGridSESDim.x - 1);
-                //     // #pragma unroll
-                //             for (int y = -idSESRangeToSearch; y <= idSESRangeToSearch; y++) {
-                //                 curgridSESId.y = clamp(ijk.y + y , 0, fullSliceGridSESDim.y - 1);
-                //     // #pragma unroll
-                //                 for (int z = -idSESRangeToSearch; z <= idSESRangeToSearch; z++) {
-                //                     curgridSESId.z = clamp(ijk.z + z , 0, fullSliceGridSESDim.z - 1);
-                //                     int curgrid1DSESId = flatten3DTo1D(curgridSESId, fullSliceGridSESDim);
-
-                //                     if (cudaGridValues[curgrid1DSESId] > pme) {//Outside
-
-                //                         int3 curgrid3DSESIdOffset = make_int3(curgridSESId.x + reducedOffset.x,
-                //                                                             curgridSESId.y + reducedOffset.y,
-                //                                                             curgridSESId.z + reducedOffset.z);
-
-                //                         float3 spacePosSES = gridToSpace(curgrid3DSESIdOffset, originGridNeighbor, gridResolutionSES);
-                //                         //Distance from our current grid cell to the outside grid cell
-                //                         float d = fast_distance(spacePosSES, spacePos3DCellSES);
-                //                         minDist = min(d, minDist);
-                //                     }
-                //                 }
-                //             }
-                //         }
-                //         if (minDist < 999.0f)
-                //             newresult =  PROBERADIUS - minDist;
-
-                //         cudaGridValues[hashNe] = newresult;
-                // }
-
-
-                if (i == 0 && j == 0 && k == 0) {
-                    FILE *fptr;
-                    string filename = "debug.dx";
-                    if ((fptr = fopen(filename.c_str(), "w")) != NULL) {
-                        fprintf(fptr, "object 1 class gridpositions counts %d %d %d\n", sliceSize, sliceSize, sliceSize);
-                        fprintf(fptr, "origin %f %f %f\n", originGridSESDx.x, originGridSESDx.y, originGridSESDx.z );
-                        fprintf(fptr, "delta %f %f %f\n", originGridSESDx.w, 0.0f, 0.0f);
-                        fprintf(fptr, "delta %f %f %f\n", 0.0f, originGridSESDx.w, 0.0f);
-                        fprintf(fptr, "delta %f %f %f\n", 0.0f, 0.0f, originGridSESDx.w);
-                        fprintf(fptr, "object 2 class gridconnections counts %d %d %d\n", sliceSize, sliceSize, sliceSize);
-                        fprintf(fptr, "object 3 class array type double rank 0 items %d data follows\n", sliceNbCellSES);
-                        for (int a = 0; a < sliceNbCellSES; a++) {
-                            if (a != 0 && a % 3 == 0) {
-                                fprintf(fptr, "\n");
-                            }
-                            fprintf(fptr, "%f ", cudaGridValues[a]);
-                        }
-                        fprintf(fptr, "\nattribute \"dep\" string \"positions\"\nobject \"regular positions regular connections\" class field\ncomponent \"positions\" value 1\ncomponent \"connections\" value 2\ncomponent \"data\" value 3\n");
-
-                        fclose(fptr);
-                    }
-                }
-
-
-                break;
-            }
-            break;
-        }
-        break;
-    }
-
-    return resultMeshes;
-}*/
-
 void computePocketVolume(float3 positions[], float radii[], unsigned int N, float resoSES){
 
     float3 minVal, maxVal;
@@ -567,9 +274,7 @@ void computePocketVolume(float3 positions[], float radii[], unsigned int N, floa
 
     int3 gridNeighborDim = {gridNeighborSize, gridNeighborSize, gridNeighborSize};
 
-    int gridSESSize = (int)ceil(maxDist / resoSES);
-
-    int3 gridSESDim = {gridSESSize, gridSESSize, gridSESSize};
+    
 
     float4 originGridNeighborDx = {
         originGridNeighbor.x,
@@ -578,12 +283,7 @@ void computePocketVolume(float3 positions[], float radii[], unsigned int N, floa
         gridResolutionNeighbor
     };
 
-    float4 originGridSESDx = {
-        originGridNeighborDx.x,
-        originGridNeighborDx.y,
-        originGridNeighborDx.z,
-        resoSES
-    };
+    
 
     unsigned int nbcellsNeighbor = gridNeighborDim.x * gridNeighborDim.y * gridNeighborDim.z;
     // unsigned int nbcellsSES = gridSESDim.x * gridSESDim.y * gridSESDim.z;
@@ -638,6 +338,29 @@ void computePocketVolume(float3 positions[], float radii[], unsigned int N, floa
 
 
     //-------------- Step 2 : Compute points of the grid outside or inside the surface -----------------
+
+    float4 sphereInclusionRad = make_float4(1.9f, 26.7f, -21.91f, 8.0f);
+
+    float radSphere = sphereInclusionRad.w;
+    float3 sphereCenter = make_float3(sphereInclusionRad.x, sphereInclusionRad.y, sphereInclusionRad.z);
+    float3 pos3DStart = sphereCenter - (radSphere + PROBERADIUS) * make_float3(1.0f, 1.0f, 1.0f);
+    int subGridSize = (int)ceil((radSphere * 2 + PROBERADIUS * 2) / resoSES);
+
+    cout << "SubGridSize = "<<subGridSize<<endl;
+
+
+    int gridSESSize = (int)ceil(maxDist / resoSES);
+
+    int3 gridSESDim = {gridSESSize, gridSESSize, gridSESSize};
+    
+    float4 originGridSESDx = {
+        originGridNeighborDx.x,
+        originGridNeighborDx.y,
+        originGridNeighborDx.z,
+        resoSES
+    };
+
+
     //Use slices of the grid to avoid allocating large amount of data
     int rangeSearchRefine = (int)ceil(PROBERADIUS / resoSES);
     int sliceSmallSize = min(SLICE , gridSESSize);
@@ -660,8 +383,6 @@ void computePocketVolume(float3 positions[], float radii[], unsigned int N, floa
     int3 offset = {0, 0, 0};
     int cut = 8;
 
-    float4 sphereInclusionRad = make_float4(1.9f, 26.7f, -21.91f, 8.0f);
-    float3 sphereCenter = make_float3(sphereInclusionRad.x, sphereInclusionRad.y, sphereInclusionRad.z);
 
     unsigned long long int totalCavityCount = 0;
 
@@ -782,33 +503,6 @@ void computePocketVolume(float3 positions[], float radii[], unsigned int N, floa
                 totalCavityCount += isCavity;
 
 
-// // // Debug output to DX file
-//                 float *hostValues2 = (float *)malloc(sizeof(float) * sliceNbCellSES);
-//                 cudaMemcpy(hostValues2, cudaGridValues, sizeof(float) * sliceNbCellSES, cudaMemcpyDeviceToHost);
-
-//                         if(i == 0 && j == 0 && k == 0){
-//                     FILE *fptr;
-//                     string filename = "debug.dx";
-//                     if ((fptr = fopen(filename.c_str(), "w")) != NULL) {
-//                         fprintf(fptr, "object 1 class gridpositions counts %d %d %d\n", sliceSize, sliceSize, sliceSize);
-//                         fprintf(fptr, "origin %f %f %f\n",originGridSESDx.x, originGridSESDx.y, originGridSESDx.z );
-//                         fprintf(fptr, "delta %f %f %f\n", resoSES, 0.0f, 0.0f);
-//                         fprintf(fptr, "delta %f %f %f\n", 0.0f, resoSES, 0.0f);
-//                         fprintf(fptr, "delta %f %f %f\n", 0.0f, 0.0f, resoSES);
-//                         fprintf(fptr, "object 2 class gridconnections counts %d %d %d\n", sliceSize, sliceSize, sliceSize);
-//                         fprintf(fptr, "object 3 class array type double rank 0 items %d data follows\n", sliceNbCellSES);
-//                         for(int a = 0; a < sliceNbCellSES; a++){
-//                             if(a != 0 && a%3 == 0){
-//                                 fprintf(fptr, "\n");
-//                             }
-//                             fprintf(fptr, "%f ", hostValues2[a]);
-//                         }
-//                         fprintf(fptr, "\nattribute \"dep\" string \"positions\"\nobject \"regular positions regular connections\" class field\ncomponent \"positions\" value 1\ncomponent \"connections\" value 2\ncomponent \"data\" value 3\n");
-
-//                         fclose(fptr);
-//                     }
-//                 }
-
             }
             // break;
         }
@@ -840,7 +534,7 @@ void computePocketVolume(float3 positions[], float radii[], unsigned int N, floa
 
 int main(int argc, const char * argv[]) {
 
-    args::ArgumentParser parser("QuickSES, SES mesh generation using GPU", "");
+    args::ArgumentParser parser("EpockGPU, SES mesh generation using GPU", "");
     args::Group groupMandatory(parser, "", args::Group::Validators::All);
     args::Group groupOptional(parser,  "", args::Group::Validators::DontCare);
     args::ValueFlag<string> inFile(groupMandatory, "input.pdb", "Input PDB file", {'i'});
