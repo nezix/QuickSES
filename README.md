@@ -38,19 +38,30 @@ Usage:   QuickSES {OPTIONS}
 ```
 
 
-The default resolution is set to 0.5 Å but can be changed at runtime.
+The default resolution is set to 0.5 Å but can be changed at runtime using -v argument.
 
-The size of the slice that defines how much memory QuickSES uses.
+The size of the slice that defines how much memory QuickSES uses can be changed using -s argument.
 
 The tool can also be used as a library by sending an array of positions and an array of radius per atom (see API_* functions).
 
 ## Compilation
 
+You CUDA toolkit installed.
+
 Just run the make file with 
 
-```console
-make
+```bash
+$> make
 ```
+
+## Example
+
+```bash
+$> wget https://files.rcsb.org/download/1KX2.pdb
+$> ./QuickSES -i 1KX2.pdb -o 1KX2_Surface.obj -v 0.2
+```
+
+This will call nvcc to create a QuickSES executable.
 
 ## Contribute
 
@@ -58,7 +69,18 @@ Pull requests are welcome!
 
 ## Please cite the following paper
 
-(In progress / Paper accepted at EuroVis MolVA, DOI to follow)
+Martinez, Xavier, Michael Krone, and Marc Baaden. "QuickSES: A Library for Fast Computation of Solvent Excluded Surfaces." The Eurographics Association, 2019.
+
+```
+@inproceedings{martinez2019quickses,
+  title={QuickSES: A Library for Fast Computation of Solvent Excluded Surfaces},
+  author={Martinez, Xavier and Krone, Michael and Baaden, Marc},
+  year={2019},
+  organization={The Eurographics Association}
+}
+```
+
+Available here: https://hal.archives-ouvertes.fr/hal-02370900/document
 
 ## License
 
