@@ -11,10 +11,12 @@ You can find it here : https://www.uni-ulm.de/fileadmin/website_uni_ulm/iui.inst
 
 This implementation contains a 3D uniform grid to access atoms neighbors in constant time and a Marching Cubes algorithm implemented in CUDA, a method to weld mesh vertices is also implemented on the GPU.
 
+
 ## Example
 
-```console
-$ ./QuickSES ~/PDBs/3eam.pdb ~/meshes/3eam_mesh.obj -v 0.3
+```bash
+$> wget https://files.rcsb.org/download/1KX2.pdb
+$> ./QuickSES -i 1KX2.pdb -o 1KX2_Surface.obj -v 0.2
 ```
 
 ## Input / Output
@@ -54,14 +56,9 @@ Just run the make file with
 $> make
 ```
 
-## Example
-
-```bash
-$> wget https://files.rcsb.org/download/1KX2.pdb
-$> ./QuickSES -i 1KX2.pdb -o 1KX2_Surface.obj -v 0.2
-```
-
 This will call nvcc to create a QuickSES executable.
+
+### Check the [Releases section](https://github.com/nezix/QuickSES/releases) for pre-built executables.
 
 ## Contribute
 
