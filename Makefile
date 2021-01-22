@@ -1,6 +1,16 @@
 NVCC=nvcc
 CC=nvcc
 NVCCFLAGS=-use_fast_math -O3
+# Modify this to change the target architecture
+#NVCCFLAGS += -gencode=arch=compute_50,code=sm_50 \
+#             -gencode=arch=compute_50,code=compute_50 \
+#             -gencode=arch=compute_52,code=sm_52 \
+#             -gencode=arch=compute_60,code=sm_60 \
+#             -gencode=arch=compute_61,code=sm_61 \
+#             -gencode=arch=compute_70,code=sm_70 \
+#             -gencode=arch=compute_75,code=sm_75 \
+#             -gencode=arch=compute_75,code=compute_75
+
 CFLAGS=-O3
 
 QuickSES: CudaSurf.o cpdb/cpdb.o cpdb/utils.o SmoothMesh.o
