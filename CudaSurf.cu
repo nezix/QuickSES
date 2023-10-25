@@ -498,9 +498,9 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
 
     //Grid is a cube
     float3 originGridNeighbor = {
-        minVal.x - maxAtomRad - 2 * probeRadius,
-        minVal.y - maxAtomRad - 2 * probeRadius,
-        minVal.z - maxAtomRad - 2 * probeRadius
+        minVal.x - 2 * maxAtomRad - 2 * probeRadius,
+        minVal.y - 2 * maxAtomRad - 2 * probeRadius,
+        minVal.z - 2 * maxAtomRad - 2 * probeRadius
     };
 
     int gridNeighborSize = (int)ceil(maxDist / gridResolutionNeighbor);
