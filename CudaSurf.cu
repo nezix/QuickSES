@@ -54,11 +54,9 @@ SOFTWARE.
 
 #include <thrust/scan.h>
 #include <thrust/device_ptr.h>
-#include <thrust/sequence.h>
 #include <thrust/binary_search.h>
-#include <thrust/sort.h>
 #include <thrust/unique.h>
-#include <thrust/count.h>
+#include <thrust/sort.h>
 
 using namespace std;
 
