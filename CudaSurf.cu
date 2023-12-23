@@ -67,6 +67,7 @@ float gridResolutionSES = 0.5f;
 int laplacianSmoothSteps = 1;
 string outputFilePath = "output.obj";
 string inputFilePath = "";
+bool weldVertices = true;
 
 
 
@@ -239,7 +240,6 @@ float4 *getArrayAtomPosRad(float3 *positions, float *radii, unsigned int N) {
     return result;
 }
 
-
 float computeMaxDist(float3 minVal, float3 maxVal, float maxAtomRad) {
     return std::max(maxVal.x - minVal.x, std::max(maxVal.y - minVal.y, maxVal.z - minVal.z)) + (2 * maxAtomRad) + (4 * probeRadius);
 }
@@ -349,6 +349,7 @@ void writeToObj(const string &fileName, std::vector<MeshData> meshes) {
 #endif
 }
 
+
 MeshData computeMarchingCubes(int3 sliceGridSESDim, int cutMC, int sliceNbCellSES, float *cudaGridValues, uint2* vertPerCell,
                               unsigned int *compactedVoxels, int3 gridSESDim, float4 originGridSESDx, int3 offset, float4 *cudaSortedAtomPosRad,
                               int2 *cellStartEnd, int3 gridNeighborDim, float4 originGridNeighborDx, int rangeSearchRefine) {
@@ -387,11 +388,15 @@ MeshData computeMarchingCubes(int3 sliceGridSESDim, int cutMC, int sliceNbCellSE
     compactVoxels <<< globalWorkSize, localWorkSize>>>(compactedVoxels, vertPerCell, lastElement.y, sliceNbCellSES, sliceNbCellSES + 1, sliceGridSESDim, rangeSearchRefine, offset);
     gpuErrchk( cudaPeekAtLastError() );
 
+
     unsigned int totalVoxsqr3 = (unsigned int )ceil((totalVoxels + NBTHREADS - 1) / NBTHREADS);
-    globalWorkSize = dim3(totalVoxsqr3, 1, 1);
-    if (totalVoxsqr3 == 0) {
+
+    if (totalVoxsqr3 == 0)
+    {
         return result;
     }
+
+    globalWorkSize = dim3(totalVoxsqr3, 1, 1);
 
     generateTriangleVerticesSMEM <<< globalWorkSize, NBTHREADS>>>(cudaVertices, compactedVoxels, vertPerCell, cudaGridValues, originGridSESDx,
             iso, totalVoxels, totalVerts - 3, sliceGridSESDim, offset);
@@ -399,76 +404,104 @@ MeshData computeMarchingCubes(int3 sliceGridSESDim, int cutMC, int sliceNbCellSE
     gpuErrchk( cudaPeekAtLastError() );
 
 
-    //Weld vertices
-    float3 *vertOri;
-    int *cudaTri;
-    int *cudaAtomIdPerVert;
 
-    int global = (unsigned int )ceil((totalVerts + NBTHREADS - 1) / NBTHREADS);
-    groupVertices <<< global, NBTHREADS >>>(cudaVertices, totalVerts, EPSILON);
-    gpuErrchk( cudaPeekAtLastError() );
+    if (weldVertices)
+    {
+        //Weld vertices
+        float3 *vertOri;
+        int *cudaTri;
+        int *cudaAtomIdPerVert;
+        unsigned int newtotalVerts = totalVerts;
 
-    gpuErrchk(cudaMalloc(&vertOri, sizeof(float3) * totalVerts));
-    gpuErrchk(cudaMemcpy(vertOri, cudaVertices, sizeof(float3) * totalVerts, cudaMemcpyDeviceToDevice));
-    gpuErrchk(cudaMalloc(&cudaTri, sizeof(int) * totalVerts));
+        int global = (unsigned int )ceil((totalVerts + NBTHREADS - 1) / NBTHREADS);
+        groupVertices <<< global, NBTHREADS >>>(cudaVertices, totalVerts, EPSILON);
+        gpuErrchk( cudaPeekAtLastError() );
 
-    memAlloc += sizeof(float3) * totalVerts;
-    memAlloc += sizeof(int) * totalVerts;
-    
+        gpuErrchk(cudaMalloc(&vertOri, sizeof(float3) * totalVerts));
+        gpuErrchk(cudaMemcpy(vertOri, cudaVertices, sizeof(float3) * totalVerts, cudaMemcpyDeviceToDevice));
+        gpuErrchk(cudaMalloc(&cudaTri, sizeof(int) * totalVerts));
 
-    thrust::device_ptr<float3> vertThrust(cudaVertices);
-    thrust::sort(vertThrust, vertThrust + totalVerts, sort_float3());
-
-    thrust::device_ptr<float3> last = thrust::unique(vertThrust, vertThrust + totalVerts, samefloat3());
-
-    unsigned int newtotalVerts = last - vertThrust;
-
-    thrust::device_ptr<float3> vertOriThrust(vertOri);
-    thrust::device_ptr<int> triThrust(cudaTri);
-    thrust::lower_bound(vertThrust, last, vertOriThrust, vertOriThrust + totalVerts, triThrust, lessf3<float3>());
-    gpuErrchk( cudaPeekAtLastError() );
-
-    gpuErrchk(cudaMalloc(&cudaAtomIdPerVert, sizeof(int) * newtotalVerts));
-    memAlloc += sizeof(int) * newtotalVerts;
-
-    global = (unsigned int )ceil((newtotalVerts + NBTHREADS - 1) / NBTHREADS);
-
-    //Look for atoms around vertices => could be done a way smarter way during the MC step
-    closestAtomPerVertex<<<global, NBTHREADS >>>(cudaAtomIdPerVert, cudaVertices, newtotalVerts, gridNeighborDim,
-                                    originGridNeighborDx, originGridSESDx, cellStartEnd, cudaSortedAtomPosRad);
-
-    gpuErrchk( cudaPeekAtLastError() );
+        memAlloc += sizeof(float3) * totalVerts;
+        memAlloc += sizeof(int) * totalVerts;
 
 
-    cerr << "MC allocation = "<< memAlloc / 1000000.0f << " Mo" << endl;
+        thrust::device_ptr<float3> d_vertThrust = thrust::device_pointer_cast(cudaVertices);
+        thrust::device_ptr<vec3> vertThrust((vec3*)thrust::raw_pointer_cast(d_vertThrust));
+
+        thrust::sort(vertThrust, vertThrust + totalVerts);
+
+        thrust::device_ptr<vec3> last = thrust::unique(vertThrust, vertThrust + totalVerts);
+
+        newtotalVerts = last - vertThrust;
+
+        thrust::device_ptr<float3> d_vertOriThrust(vertOri);
+        thrust::device_ptr<vec3> vertOriThrust((vec3*)thrust::raw_pointer_cast(d_vertOriThrust));
+
+        thrust::device_ptr<int> triThrust(cudaTri);
+        thrust::lower_bound(vertThrust, last, vertOriThrust, vertOriThrust + totalVerts, triThrust);
+        gpuErrchk( cudaPeekAtLastError() );
 
 
-    int Ntriangles = totalVerts / 3;
+        gpuErrchk(cudaMalloc(&cudaAtomIdPerVert, sizeof(int) * newtotalVerts));
+        memAlloc += sizeof(int) * newtotalVerts;
 
-    result.vertices = (float3 *) malloc(sizeof(float3) * newtotalVerts);
-    result.triangles = (int3 *) malloc(sizeof(int3) * Ntriangles);
-    result.atomIdPerVert = (int *) malloc(sizeof(int) * newtotalVerts);
-    result.NVertices = newtotalVerts;
-    result.NTriangles = Ntriangles;
+        global = (unsigned int )ceil((newtotalVerts + NBTHREADS - 1) / NBTHREADS);
 
-    int *tmpTri = (int *)malloc(sizeof(int) * totalVerts);
+        //Look for atoms around vertices => could be done a way smarter way during the MC step
+        closestAtomPerVertex<<<global, NBTHREADS >>>(cudaAtomIdPerVert, cudaVertices, newtotalVerts, gridNeighborDim,
+                                        originGridNeighborDx, originGridSESDx, cellStartEnd, cudaSortedAtomPosRad);
 
-    gpuErrchk(cudaMemcpy(result.vertices, cudaVertices, sizeof(float3)*newtotalVerts, cudaMemcpyDeviceToHost));
-    gpuErrchk(cudaMemcpy(result.atomIdPerVert, cudaAtomIdPerVert, sizeof(int) * newtotalVerts, cudaMemcpyDeviceToHost));
-    gpuErrchk(cudaMemcpy(tmpTri, cudaTri, sizeof(int)*totalVerts, cudaMemcpyDeviceToHost));
+        gpuErrchk( cudaPeekAtLastError() );
 
-    //Store the triangle in a 3d vector
-    for (int i = 0; i < Ntriangles; i++) {
-        result.triangles[i].x = tmpTri[i * 3 + 0];
-        result.triangles[i].y = tmpTri[i * 3 + 1];
-        result.triangles[i].z = tmpTri[i * 3 + 2];
+
+        cerr << "MC allocation = "<< memAlloc / 1000000.0f << " Mo" << endl;
+
+        int Ntriangles = totalVerts / 3;
+
+        result.vertices = (float3 *) malloc(sizeof(float3) * newtotalVerts);
+        result.triangles = (int3 *) malloc(sizeof(int3) * Ntriangles);
+        result.atomIdPerVert = (int *) malloc(sizeof(int) * newtotalVerts);
+        result.NVertices = newtotalVerts;
+        result.NTriangles = Ntriangles;
+
+        int *tmpTri = (int *)malloc(sizeof(int) * totalVerts);
+
+        gpuErrchk(cudaMemcpy(result.vertices, cudaVertices, sizeof(float3)*newtotalVerts, cudaMemcpyDeviceToHost));
+        gpuErrchk(cudaMemcpy(result.atomIdPerVert, cudaAtomIdPerVert, sizeof(int) * newtotalVerts, cudaMemcpyDeviceToHost));
+        gpuErrchk(cudaMemcpy(tmpTri, cudaTri, sizeof(int)*totalVerts, cudaMemcpyDeviceToHost));
+
+        //Store the triangle in a 3d vector
+        for (int i = 0; i < Ntriangles; i++) {
+            result.triangles[i].x = tmpTri[i * 3 + 0];
+            result.triangles[i].y = tmpTri[i * 3 + 1];
+            result.triangles[i].z = tmpTri[i * 3 + 2];
+        }
+        free(tmpTri);
+
+        gpuErrchk(cudaFree(cudaVertices));
+        gpuErrchk(cudaFree(vertOri));
+        gpuErrchk(cudaFree(cudaTri));
+        gpuErrchk(cudaFree(cudaAtomIdPerVert));
     }
-    free(tmpTri);
+    else
+    {
+        int Ntriangles = totalVerts / 3;
 
-    gpuErrchk(cudaFree(cudaVertices));
-    gpuErrchk(cudaFree(vertOri));
-    gpuErrchk(cudaFree(cudaTri));
-    gpuErrchk(cudaFree(cudaAtomIdPerVert));
+        result.vertices = (float3 *) malloc(sizeof(float3) * totalVerts);
+        result.triangles = (int3 *) malloc(sizeof(int3) * Ntriangles);
+        result.atomIdPerVert = (int *) malloc(sizeof(int) * totalVerts);
+        result.NVertices = totalVerts;
+        result.NTriangles = Ntriangles;
+
+        gpuErrchk(cudaMemcpy(result.vertices, cudaVertices, sizeof(float3)*totalVerts, cudaMemcpyDeviceToHost));
+
+        for (int i = 0; i < Ntriangles; i++) {
+            result.triangles[i].x = i * 3 + 0;
+            result.triangles[i].y = i * 3 + 1;
+            result.triangles[i].z = i * 3 + 2;
+        }
+
+    }
 
     return result;
 }

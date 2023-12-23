@@ -39,24 +39,6 @@ struct compare_int2 {
 struct compare_int {
     __host__ __device__ __forceinline__ bool operator()(int a, int b) {return a < b;}
 };
-struct compare_float3 {
-    __device__ __host__ bool operator()(float3 a, float3 b) {
-        if      (a.x <= b.x && a.y <= b.y && a.z < b.z) return true;
-        else if (a.x <= b.x && a.y < b.y) return true;
-        else if (a.x < b.x) return true;
-        else return false;
-    }
-};
-struct sort_float3 {
-    __host__ __device__
-    bool operator()(const float3 &a, const float3 &b) const {
-
-        if      (a.x <= b.x && a.y <= b.y && a.z < b.z) return true;
-        else if (a.x <= b.x && a.y < b.y) return true;
-        else if (a.x < b.x) return true;
-        else return false;
-    }
-};
 
 struct compare_int3 {
     __host__ __device__ bool operator()(int3 a, int3 b) {
@@ -66,18 +48,7 @@ struct compare_int3 {
         else return false;
     }
 };
-struct samefloat3 {
-    __host__ __device__ bool operator()(float3 a, float3 b) {
-        if (abs(a.x - b.x) > EPSILON)
-            return false;
-        if (abs(a.y - b.y) > EPSILON)
-            return false;
-        if (abs(a.z - b.z) > EPSILON)
-            return false;
 
-        return true;
-    }
-};
 struct sameint3 {
     __host__ __device__ bool operator()(int3 a, int3 b) {
         if (a.x != b.x)
@@ -91,17 +62,7 @@ struct sameint3 {
     }
 };
 
-
-template<typename T>
-struct lessf3 : public thrust::binary_function<T, T, bool>
-{
-    __host__ __device__ bool operator()(const T &a, const T &b) const {
-        if      (a.x <= b.x && a.y <= b.y && a.z < b.z) return true;
-        else if (a.x <= b.x && a.y < b.y) return true;
-        else if (a.x < b.x) return true;
-        else return false;
-    }
-};
+typedef thrust::tuple<float,float, float> vec3;
 
 struct add_uint2 {
     __device__
@@ -200,8 +161,6 @@ inline __host__ __device__ float sqr_distance(float3 p1, float3 p2) {
     return x + y + z;
 }
 
-
-
 inline __host__ __device__ float3 clamp(float3 f, float a, float b)
 {
     return make_float3(max(a, min(f.x, b)),
@@ -221,9 +180,6 @@ inline __host__ __device__ int clamp(int f, int a, int b)
     return max(a, min(f, b));
 }
 
-// inline __device__ int lessThan(float x, float y) {
-//     return max(sign(y - x), 0);
-// }
 
 // calculate cell address as the hash value for each atom
 __global__ void hashAtoms(unsigned int natoms,
