@@ -67,7 +67,7 @@ void initRadiusDic() {
     radiusDic['C'] = 1.70f * factor;
     radiusDic['N'] = 1.55f * factor;
     radiusDic['H'] = 1.20f * factor;
-    radiusDic['S'] = 2.27f * factor;
+    radiusDic['S'] = 1.80f * factor;
     radiusDic['P'] = 1.80f * factor;
     radiusDic['X'] = 1.40f * factor;
 }
