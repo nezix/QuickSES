@@ -250,7 +250,7 @@ float4 *getArrayAtomPosRad(float3 *positions, float *radii, unsigned int N)
 
 float computeMaxDist(float3 minVal, float3 maxVal, float maxAtomRad)
 {
-    return std::max(maxVal.x - minVal.x, std::max(maxVal.y - minVal.y, maxVal.z - minVal.z)) + (2 * maxAtomRad) + (4 * probeRadius);
+    return std::max(maxVal.x - minVal.x, std::max(maxVal.y - minVal.y, maxVal.z - minVal.z)) + (2 * maxAtomRad) + (2 * probeRadius);
 }
 
 void writeToObj(const string &fileName, const vector<int> &meshTriSizes, const vector<int> &meshVertSizes,
@@ -563,10 +563,12 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
     gridResolutionNeighbor = probeRadius + maxAtomRad;
 
     // Grid is a cube
-    float3 originGridNeighbor = {
-        minVal.x - maxAtomRad - 2 * probeRadius,
-        minVal.y - maxAtomRad - 2 * probeRadius,
-        minVal.z - maxAtomRad - 2 * probeRadius};
+    float3 originGridNeighbor = 
+    {
+        minVal.x ,
+        minVal.y ,
+        minVal.z 
+    };
 
     int gridNeighborSize = (int)ceil(maxDist / gridResolutionNeighbor);
 
