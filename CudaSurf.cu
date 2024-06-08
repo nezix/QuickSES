@@ -203,7 +203,6 @@ float4 *getArrayAtomPosRad(pdb *P, unsigned int N)
     chain *C = NULL;
     atom *A = NULL;
     float4 *result = new float4[N];
-    // float4 *result;
     int id = 0;
 
     for (int chainId = 0; chainId < P->size; chainId++)
@@ -285,12 +284,7 @@ void writeToObj(const string &fileName, const vector<int> &meshTriSizes, const v
         for (int i = 0; i < ntri; i++)
         {
             int3 triangle = AllTriangles[m][i];
-            if (triangle.x != triangle.y &&
-                triangle.x != triangle.z &&
-                triangle.y != triangle.z)
-            {
-                fprintf(fptr, "f %d %d %d\n", cumulMesh + triangle.y + 1, cumulMesh + triangle.x + 1, cumulMesh + triangle.z + 1);
-            }
+            fprintf(fptr, "f %d %d %d\n", cumulMesh + triangle.y + 1, cumulMesh + triangle.x + 1, cumulMesh + triangle.z + 1);
         }
         cumulMesh += meshVertSizes[m];
     }
@@ -325,12 +319,7 @@ void writeToObj(const string &fileName, const MeshData &mesh)
     for (int i = 0; i < mesh.NTriangles; i++)
     {
         int3 triangle = mesh.triangles[i];
-        if (triangle.x != triangle.y &&
-            triangle.x != triangle.z &&
-            triangle.y != triangle.z)
-        {
-            fprintf(fptr, "f %d %d %d\n", triangle.y + 1, triangle.x + 1, triangle.z + 1);
-        }
+        fprintf(fptr, "f %d %d %d\n", triangle.y + 1, triangle.x + 1, triangle.z + 1);
     }
     fclose(fptr);
 #if MEASURETIME
@@ -371,11 +360,7 @@ void writeToObj(const string &fileName, std::vector<MeshData> meshes)
         for (int i = 0; i < mesh.NTriangles; i++)
         {
             int3 triangle = mesh.triangles[i];
-
-            if (triangle.x != triangle.y && triangle.x != triangle.z && triangle.y != triangle.z)
-            {
-                fprintf(fptr, "f %d %d %d\n", cumulVert + triangle.y + 1, cumulVert + triangle.x + 1, cumulVert + triangle.z + 1);
-            }
+            fprintf(fptr, "f %d %d %d\n", cumulVert + triangle.y + 1, cumulVert + triangle.x + 1, cumulVert + triangle.z + 1);
         }
         cumulVert += mesh.NVertices;
     }
@@ -803,12 +788,6 @@ API void API_computeSES(float resoSES, float3 *atomPos, float *atomRad, unsigned
                         unsigned int *NVert, int *out_triangles, unsigned int *NTri, int doSmoothing)
 {
 
-    // float3 *positions = (float3 *)malloc(sizeof(float3) * N);
-
-    // for (int a = 0; a < N; a++) {
-    //     positions[a] = make_float3(atomPos[a * 3 + 0], atomPos[a * 3 + 1], atomPos[a * 3 + 2]);
-    // }
-
     *NVert = 0;
     *NTri = 0;
 
@@ -840,16 +819,20 @@ API void API_computeSES(float resoSES, float3 *atomPos, float *atomRad, unsigned
         }
         for (int t = 0; t < resultMeshes[i].NTriangles; t++)
         {
-            globalTriangles[curIdT++] = resultMeshes[i].triangles[t].x + cumulVert;
-            globalTriangles[curIdT++] = resultMeshes[i].triangles[t].y + cumulVert;
-            globalTriangles[curIdT++] = resultMeshes[i].triangles[t].z + cumulVert;
+            int3 triangle = resultMeshes[i].triangles[t];
+            if (triangle.x != triangle.y && triangle.y != triangle.z && triangle.x != triangle.z)
+            {
+                globalTriangles[curIdT++] = triangle.x + cumulVert;
+                globalTriangles[curIdT++] = triangle.y + cumulVert;
+                globalTriangles[curIdT++] = triangle.z + cumulVert;
+            }
         }
         cumulVert += resultMeshes[i].NVertices;
     }
 
     *NVert = totalVerts;
-    *NTri = totalTris;
-    NTriangles = totalTris;
+    *NTri = curIdT;
+    NTriangles = curIdT;
     NVertices = totalVerts;
     // free(positions);
 
