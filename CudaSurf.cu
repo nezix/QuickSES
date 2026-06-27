@@ -615,7 +615,7 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
     memsetCudaInt2<<<(nbcellsNeighbor + NBTHREADS - 1) / NBTHREADS, NBTHREADS>>>(cellStartEnd, make_int2(EMPTYCELL, EMPTYCELL), nbcellsNeighbor);
 
     // Reorder atoms positions and radii and fill cellStartEnd
-    sortCell<<<N, NBTHREADS>>>(N, cudaAtomPosRad, cudaHashIndex, cudaSortedAtomPosRad, cellStartEnd);
+    sortCell<<<(N + NBTHREADS - 1) / NBTHREADS, NBTHREADS>>>(N, cudaAtomPosRad, cudaHashIndex, cudaSortedAtomPosRad, cellStartEnd);
 
     gpuErrchk(cudaPeekAtLastError());
 
