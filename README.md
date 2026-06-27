@@ -46,6 +46,19 @@ The size of the slice that defines how much memory QuickSES uses can be changed 
 
 The tool can also be used as a library by sending an array of positions and an array of radius per atom (see API_* functions).
 
+## Cross-platform backends (beyond CUDA)
+
+QuickSES was CUDA-only. The `cross-platform` branch adds portable compute backends that **reproduce
+the CUDA mesh** so QuickSES runs on macOS/Metal, Linux/Windows (Vulkan/D3D), Web and Quest — see
+[`backends/README.md`](backends/README.md):
+
+- **WGSL / WebGPU** (`backends/wgsl/`, Rust + wgpu) — standalone library, one codebase → all GPUs + Web.
+- **Unity Compute Shader** (`backends/unity/`, HLSL) — runs in-engine on every Unity target, no native lib.
+
+The CUDA path here stays the **NVIDIA fast reference** (~5× faster at the surface-math kernels). All
+backends match the CUDA output bit-exact on vertices (1CRN/1UBQ/4HHB/1AON, incl. the 8-slab tiling
+path; faces −1 = the API-correct degenerate drop). The `API_*` C ABI is preserved across backends.
+
 ## Compilation
 
 You CUDA toolkit installed.
@@ -56,7 +69,9 @@ Just run the make file with
 $> make
 ```
 
-This will call nvcc to create a QuickSES executable.
+This will call nvcc to create a QuickSES executable. For the portable backends, see
+[`backends/README.md`](backends/README.md) (`cargo run` for WGSL; a Unity 2021.3 project for the
+Compute Shader backend).
 
 ### Check the [Releases section](https://github.com/nezix/QuickSES/releases) for pre-built executables.
 

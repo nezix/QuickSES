@@ -1,0 +1,386 @@
+// QuickSES Unity Compute Shader (HLSL) port — single-slab (offset = 0, sliceGrid == sesGrid).
+// Faithful port of Kernels.cu / MarchingCubes.cu, mirroring the verified WGSL prototype
+// stage-for-stage (probe.wgsl, refine.wgsl, mc_count.wgsl, mc_gen.wgsl).
+//
+// Constants matching the CUDA source:
+//   PROBERADIUS = 1.4, EPSILON = 0.001, EMPTYCELL = INT_MAX-1 = 2147483646
+
+#pragma kernel probeIntersection
+#pragma kernel distanceFieldRefine
+#pragma kernel countVertexPerCell
+#pragma kernel generateTriangleVertices
+
+static const float PROBERADIUS = 1.4;
+static const float EPSILON = 0.001;
+static const int   EMPTYCELL = 2147483646; // INT_MAX - 1
+
+// ----- Shared params (cbuffer; std140-like layout mirroring the WGSL Params) -----
+cbuffer Params : register(b0)
+{
+    float4 originNeighbor;  // xyz origin + .w dx (neighbor grid)
+    float4 originSES;       // xyz origin + .w dx (SES grid)
+    int4   gridNeighborDim; // xyz used
+    int4   gridSESDim;      // xyz used
+    int    nAtoms;
+    int    rangeSearchRefine;
+    int    nSESCells;
+    int    notEmptyCells;   // refine: number of border cells
+    int    activeVoxels;    // gen: number of compacted voxels
+    int    maxVertsM3;      // gen: totalVerts - 3
+    int    _pad0;
+    int    _pad1;
+};
+
+// ----- Buffers -----
+StructuredBuffer<int2>    cellStartEnd;   // per neighbor cell {start,end}
+StructuredBuffer<float4>  sortedAtoms;    // {x,y,z,r}
+RWStructuredBuffer<float> gridValues;
+RWStructuredBuffer<int>   checkFill;
+StructuredBuffer<int>     borderHashes;   // compacted checkFill (notEmpty entries)
+RWStructuredBuffer<uint2> vertPerCell;    // {numVerts, occupied}
+StructuredBuffer<int>     nbTriTable;     // 256
+StructuredBuffer<int>     triTable;       // 256*16
+StructuredBuffer<uint>    compactedVoxels;
+StructuredBuffer<uint>    vertOffset;     // exclusive-scan of vertPerCell.x
+RWStructuredBuffer<float4> outVerts;      // xyz used
+
+// ----- Helpers (mirror kernels.wgsl) -----
+int flatten3DTo1D(int3 id, int3 dim)
+{
+    return (dim.y * dim.z * id.x) + (dim.z * id.y) + id.z;
+}
+
+int3 unflatten1DTo3D(int index, int3 dim)
+{
+    int x = index / (dim.y * dim.z);
+    int y = (index - x * dim.y * dim.z) / dim.z;
+    int z = index - x * dim.y * dim.z - y * dim.z;
+    return int3(x, y, z);
+}
+
+int3 spaceToGrid(float3 pos, float3 origin, float dx)
+{
+    float3 t = (pos - origin) / dx;
+    return int3((int)t.x, (int)t.y, (int)t.z); // C truncation toward zero
+}
+
+float3 gridToSpace(int3 cell, float3 origin, float dx)
+{
+    return origin + float3((float)cell.x, (float)cell.y, (float)cell.z) * dx;
+}
+
+float fast_distance3(float3 a, float3 b)
+{
+    float3 d = a - b;
+    return sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+}
+
+int clampi(int v, int a, int b)
+{
+    return max(a, min(v, b));
+}
+
+// =====================================================================
+// Stage 1 — probeIntersection + computeInOrOut (Kernels.cu:344, :394)
+// =====================================================================
+float computeInOrOut(int3 id3DNeigh, float3 spacePosSES, float dx)
+{
+    float result = PROBERADIUS;
+    bool nearProbe = false;
+    int3 nd = gridNeighborDim.xyz;
+    for (int x = -1; x <= 1; x = x + 1)
+    {
+        int cx = clampi(id3DNeigh.x + x, 0, nd.x - 1);
+        for (int y = -1; y <= 1; y = y + 1)
+        {
+            // CUDA quirk: uses gridDimNeighbor.x for the y clamp too
+            int cy = clampi(id3DNeigh.y + y, 0, nd.x - 1);
+            for (int z = -1; z <= 1; z = z + 1)
+            {
+                int cz = clampi(id3DNeigh.z + z, 0, nd.x - 1);
+                int neighcellhash = flatten3DTo1D(int3(cx, cy, cz), nd);
+                int2 se = cellStartEnd[neighcellhash];
+                int idStart = se.x;
+                int idStop = se.y;
+                if (idStart < EMPTYCELL)
+                {
+                    for (int idx = idStart; idx < idStop; idx = idx + 1)
+                    {
+                        float4 a = sortedAtoms[idx];
+                        float rad = a.w;
+                        float3 pos = float3(a.x, a.y, a.z);
+                        float d = fast_distance3(pos, spacePosSES);
+                        if (d < rad - dx)
+                        {
+                            return -dx;
+                        }
+                        if (d < (PROBERADIUS + rad))
+                        {
+                            nearProbe = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (nearProbe)
+    {
+        result = 0.0;
+    }
+    return result;
+}
+
+[numthreads(8, 8, 8)]
+void probeIntersection(uint3 gid : SV_DispatchThreadID)
+{
+    int i = (int)gid.x;
+    int j = (int)gid.y;
+    int k = (int)gid.z;
+    int3 sliceDim = gridSESDim.xyz;
+
+    if (i >= sliceDim.x - 1) { return; }
+    if (j >= sliceDim.y - 1) { return; }
+    if (k >= sliceDim.z - 1) { return; }
+
+    int3 ijk = int3(i, j, k);
+    int hash = flatten3DTo1D(ijk, sliceDim);
+
+    // offset = 0 -> ijkOffset == ijk, gridSESDim == sliceDim
+    int3 ijkOffset = ijk;
+    if (ijkOffset.x >= gridSESDim.x - 1) { return; }
+    if (ijkOffset.y >= gridSESDim.y - 1) { return; }
+    if (ijkOffset.z >= gridSESDim.z - 1) { return; }
+
+    float3 originNeigh = originNeighbor.xyz;
+    float dxNeighbor = originNeighbor.w;
+    float dxSES = originSES.w;
+
+    // CUDA quirk: SES-cell world position built from neighbor origin but SES dx
+    float3 spacePos3DCellSES = gridToSpace(ijkOffset, originNeigh, dxSES);
+    int3 gridPos3DCellNeighbor = spaceToGrid(spacePos3DCellSES, originNeigh, dxNeighbor);
+
+    float result = computeInOrOut(gridPos3DCellNeighbor, spacePos3DCellSES, dxSES);
+
+    int fill = EMPTYCELL;
+    if (abs(result) < EPSILON)
+    {
+        fill = hash;
+    }
+    checkFill[hash] = fill;
+    gridValues[hash] = result;
+}
+
+// =====================================================================
+// Stage 2 — distanceFieldRefine (Kernels.cu:478). One thread per border cell.
+// =====================================================================
+[numthreads(256, 1, 1)]
+void distanceFieldRefine(uint3 gid : SV_DispatchThreadID)
+{
+    int id = (int)gid.x;
+    if (id >= notEmptyCells) { return; }
+
+    int hash = borderHashes[id];
+    int3 sliceDim = gridSESDim.xyz;
+    int3 ijk = unflatten1DTo3D(hash, sliceDim);
+
+    // offset = 0
+    int3 ijkOffset = ijk;
+    float3 originSESp = originSES.xyz;
+    float dxSES = originSES.w;
+    float3 spacePos3DCellSES = gridToSpace(ijkOffset, originSESp, dxSES);
+
+    float newresult = -dxSES;
+    int idSESRangeToSearch = rangeSearchRefine; // ceil(PROBERADIUS/dxSES)
+    float pme = PROBERADIUS - EPSILON;
+    float minDist = 100000.0;
+
+    for (int x = -idSESRangeToSearch; x <= idSESRangeToSearch; x = x + 1)
+    {
+        int cx = clampi(ijk.x + x, 0, sliceDim.x - 1);
+        for (int y = -idSESRangeToSearch; y <= idSESRangeToSearch; y = y + 1)
+        {
+            int cy = clampi(ijk.y + y, 0, sliceDim.y - 1);
+            for (int z = -idSESRangeToSearch; z <= idSESRangeToSearch; z = z + 1)
+            {
+                int cz = clampi(ijk.z + z, 0, sliceDim.z - 1);
+                int3 cur = int3(cx, cy, cz);
+                int curId = flatten3DTo1D(cur, sliceDim);
+                if (gridValues[curId] > pme) // outside
+                {
+                    int3 curOffset = cur; // offset = 0
+                    float3 spacePosSES = gridToSpace(curOffset, originSESp, dxSES);
+                    float d = fast_distance3(spacePosSES, spacePos3DCellSES);
+                    minDist = min(d, minDist);
+                }
+            }
+        }
+    }
+    if (minDist < 999.0)
+    {
+        newresult = PROBERADIUS - minDist;
+    }
+    gridValues[hash] = newresult;
+}
+
+// =====================================================================
+// Stage 3 — countVertexPerCell (MarchingCubes.cu:571)
+// =====================================================================
+int to1D(int3 ids, int3 dim)
+{
+    return (dim.y * dim.z * ids.x) + (dim.z * ids.y) + ids.z;
+}
+
+[numthreads(8, 8, 8)]
+void countVertexPerCell(uint3 gid : SV_DispatchThreadID)
+{
+    int i = (int)gid.x;
+    int j = (int)gid.y;
+    int k = (int)gid.z;
+    int3 dim = gridSESDim.xyz;
+    int rs = rangeSearchRefine;
+
+    if (i > dim.x - 2) { return; }
+    if (j > dim.y - 2) { return; }
+    if (k > dim.z - 2) { return; }
+
+    // offset == 0 branch of the guards
+    if (i >= dim.x - rs * 2 - 1) { return; }
+    if (j >= dim.y - rs * 2 - 1) { return; }
+    if (k >= dim.z - rs * 2 - 1) { return; }
+
+    if (i >= dim.x - rs - 1) { return; }
+    if (j >= dim.y - rs - 1) { return; }
+    if (k >= dim.z - rs - 1) { return; }
+
+    int id = to1D(int3(i, j, k), dim);
+
+    float v0 = gridValues[to1D(int3(i,     j,     k    ), dim)];
+    float v1 = gridValues[to1D(int3(i + 1, j,     k    ), dim)];
+    float v2 = gridValues[to1D(int3(i + 1, j + 1, k    ), dim)];
+    float v3 = gridValues[to1D(int3(i,     j + 1, k    ), dim)];
+    float v4 = gridValues[to1D(int3(i,     j,     k + 1), dim)];
+    float v5 = gridValues[to1D(int3(i + 1, j,     k + 1), dim)];
+    float v6 = gridValues[to1D(int3(i + 1, j + 1, k + 1), dim)];
+    float v7 = gridValues[to1D(int3(i,     j + 1, k + 1), dim)];
+
+    float iso = 0.0;
+    int cubeIndex = 0;
+    cubeIndex = cubeIndex + (int)(v0 < iso);
+    cubeIndex = cubeIndex + (int)(v1 < iso) * 2;
+    cubeIndex = cubeIndex + (int)(v2 < iso) * 4;
+    cubeIndex = cubeIndex + (int)(v3 < iso) * 8;
+    cubeIndex = cubeIndex + (int)(v4 < iso) * 16;
+    cubeIndex = cubeIndex + (int)(v5 < iso) * 32;
+    cubeIndex = cubeIndex + (int)(v6 < iso) * 64;
+    cubeIndex = cubeIndex + (int)(v7 < iso) * 128;
+
+    uint nv = (uint)nbTriTable[cubeIndex];
+    uint occ = 0;
+    if (nv > 0) { occ = 1; }
+    vertPerCell[id] = uint2(nv, occ);
+}
+
+// =====================================================================
+// Stage 4 — generateTriangleVertices (MarchingCubes.cu:736)
+// Per-thread local vertlist (no groupshared -> no 32KB ceiling). One thread per active voxel.
+// =====================================================================
+int to1Du(uint3 ids, int3 dim)
+{
+    uint3 d = uint3((uint)dim.x, (uint)dim.y, (uint)dim.z);
+    return (int)((d.y * d.z * ids.x) + (d.z * ids.y) + ids.z);
+}
+
+uint3 grid1DTo3D(uint index, int3 dim)
+{
+    uint3 d = uint3((uint)dim.x, (uint)dim.y, (uint)dim.z);
+    uint x = index / (d.y * d.z);
+    uint y = (index - x * d.y * d.z) / d.z;
+    uint z = index - x * d.y * d.z - y * d.z;
+    return uint3(x, y, z);
+}
+
+float3 vertexInterp(float iso, float3 p0, float3 p1, float f0, float f1)
+{
+    float t = (iso - f0) / (f1 - f0);
+    return p0 + t * (p1 - p0);
+}
+
+[numthreads(256, 1, 1)]
+void generateTriangleVertices(uint3 gid : SV_DispatchThreadID)
+{
+    uint id = gid.x;
+    if (id >= (uint)activeVoxels) { return; }
+
+    int3 dim = gridSESDim.xyz;
+    uint voxel = compactedVoxels[id];
+    uint3 gp = grid1DTo3D(voxel, dim);
+
+    float dx = originSES.w;
+    float3 origin = originSES.xyz;
+    float3 p = origin + float3((float)gp.x, (float)gp.y, (float)gp.z) * dx;
+
+    float3 v[8];
+    v[0] = p;
+    v[1] = p + float3(dx, 0.0, 0.0);
+    v[2] = p + float3(dx, dx, 0.0);
+    v[3] = p + float3(0.0, dx, 0.0);
+    v[4] = p + float3(0.0, 0.0, dx);
+    v[5] = p + float3(dx, 0.0, dx);
+    v[6] = p + float3(dx, dx, dx);
+    v[7] = p + float3(0.0, dx, dx);
+
+    float field[8];
+    field[0] = gridValues[voxel];
+    field[1] = gridValues[to1Du(gp + uint3(1u, 0u, 0u), dim)];
+    field[2] = gridValues[to1Du(gp + uint3(1u, 1u, 0u), dim)];
+    field[3] = gridValues[to1Du(gp + uint3(0u, 1u, 0u), dim)];
+    field[4] = gridValues[to1Du(gp + uint3(0u, 0u, 1u), dim)];
+    field[5] = gridValues[to1Du(gp + uint3(1u, 0u, 1u), dim)];
+    field[6] = gridValues[to1Du(gp + uint3(1u, 1u, 1u), dim)];
+    field[7] = gridValues[to1Du(gp + uint3(0u, 1u, 1u), dim)];
+
+    float iso = 0.0;
+    int cubeindex = 0;
+    cubeindex = cubeindex + (int)(field[0] < iso);
+    cubeindex = cubeindex + (int)(field[1] < iso) * 2;
+    cubeindex = cubeindex + (int)(field[2] < iso) * 4;
+    cubeindex = cubeindex + (int)(field[3] < iso) * 8;
+    cubeindex = cubeindex + (int)(field[4] < iso) * 16;
+    cubeindex = cubeindex + (int)(field[5] < iso) * 32;
+    cubeindex = cubeindex + (int)(field[6] < iso) * 64;
+    cubeindex = cubeindex + (int)(field[7] < iso) * 128;
+
+    float3 vertlist[12];
+    vertlist[0]  = vertexInterp(iso, v[0], v[1], field[0], field[1]);
+    vertlist[1]  = vertexInterp(iso, v[1], v[2], field[1], field[2]);
+    vertlist[2]  = vertexInterp(iso, v[2], v[3], field[2], field[3]);
+    vertlist[3]  = vertexInterp(iso, v[3], v[0], field[3], field[0]);
+    vertlist[4]  = vertexInterp(iso, v[4], v[5], field[4], field[5]);
+    vertlist[5]  = vertexInterp(iso, v[5], v[6], field[5], field[6]);
+    vertlist[6]  = vertexInterp(iso, v[6], v[7], field[6], field[7]);
+    vertlist[7]  = vertexInterp(iso, v[7], v[4], field[7], field[4]);
+    vertlist[8]  = vertexInterp(iso, v[0], v[4], field[0], field[4]);
+    vertlist[9]  = vertexInterp(iso, v[1], v[5], field[1], field[5]);
+    vertlist[10] = vertexInterp(iso, v[2], v[6], field[2], field[6]);
+    vertlist[11] = vertexInterp(iso, v[3], v[7], field[3], field[7]);
+
+    // offset = 0 -> offsetPos = 0
+    uint numVerts = (uint)nbTriTable[cubeindex];
+    uint base = vertOffset[voxel];
+    uint i = 0u;
+    [loop]
+    while (i < numVerts)
+    {
+        uint index = base + i;
+        int e0 = triTable[cubeindex * 16 + (int)i];
+        int e1 = triTable[cubeindex * 16 + (int)i + 1];
+        int e2 = triTable[cubeindex * 16 + (int)i + 2];
+        if (index < (uint)maxVertsM3)
+        {
+            outVerts[index]      = float4(vertlist[e0], 0.0);
+            outVerts[index + 1u] = float4(vertlist[e1], 0.0);
+            outVerts[index + 2u] = float4(vertlist[e2], 0.0);
+        }
+        i = i + 3u;
+    }
+}

@@ -1,0 +1,12 @@
+[package]
+name = "wgsl-quickses"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wgpu = "0.20"
+pollster = "0.3"
+bytemuck = { version = "1", features = ["derive"] }
+
+[profile.release]
+opt-level = 3
