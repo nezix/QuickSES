@@ -602,7 +602,7 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
     gpuErrchk(cudaMemcpy(cudaAtomPosRad, atomPosRad, sizeof(float4) * N, cudaMemcpyHostToDevice));
 
     // Compute atom cell ids
-    hashAtoms<<<N, NBTHREADS>>>(N, cudaAtomPosRad, gridNeighborDim, originGridNeighborDx, cudaHashIndex, N);
+    hashAtoms<<<(N + NBTHREADS - 1) / NBTHREADS, NBTHREADS>>>(N, cudaAtomPosRad, gridNeighborDim, originGridNeighborDx, cudaHashIndex, N);
 
     gpuErrchk(cudaPeekAtLastError());
 

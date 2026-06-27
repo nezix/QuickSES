@@ -506,7 +506,9 @@ __global__ void distanceFieldRefine(int * checkFill, int2 * atomHashIndex, int3 
 
     const int idSESRangeToSearch = (int)ceil(PROBERADIUS / dxSES);
     const float pme = PROBERADIUS - EPSILON;
-    float minDist = 100000.0f;
+    // Track the SQUARED min distance to drop the per-candidate sqrt from this hot loop;
+    // sqrt is monotonic so min(sqrt(d^2)) == sqrt(min(d^2)). Correctness-neutral.
+    float minDistSq = 100000.0f * 100000.0f;
 
     int3 curgridSESId;
 
@@ -531,14 +533,14 @@ __global__ void distanceFieldRefine(int * checkFill, int2 * atomHashIndex, int3 
 
                     float3 spacePosSES = gridToSpace(curgrid3DSESIdOffset, originGridSES, dxSES);
                     //Distance from our current grid cell to the outside grid cell
-                    float d = fast_distance(spacePosSES, spacePos3DCellSES);
-                    minDist = min(d, minDist);
+                    float dsq = sqr_distance(spacePosSES, spacePos3DCellSES);
+                    minDistSq = min(dsq, minDistSq);
                 }
             }
         }
     }
-    if (minDist < 999.0f)
-        newresult =  PROBERADIUS - minDist;
+    if (minDistSq < 999.0f * 999.0f)
+        newresult =  PROBERADIUS - sqrt(minDistSq);
 
     gridValues[hash] = newresult;
 
