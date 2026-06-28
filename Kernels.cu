@@ -512,44 +512,29 @@ __global__ void distanceFieldRefine(int * checkFill, int2 * atomHashIndex, int3 
 
     int3 curgridSESId;
 
-    // Find the closest outside SES cell in the range [-probeRadius, +probeRadius].
-    // EXPANDING-SHELL branch-and-bound (bit-exact with the full (2R+1)^3 cube). A cell at integer
-    // offset (x,y,z) with Chebyshev radius r = max(|x|,|y|,|z|) has Euclidean distance >= dx*r, so
-    // once the current shell's lower bound (r*dx) exceeds the best distance found so far, no farther
-    // cell can improve minDist -> stop. The shells' union equals the cube and min is idempotent, so
-    // this finds the identical nearest cell (identical minDistSq -> identical surface) while reading
-    // only the shells up to the first hit + 1, not all (2R+1)^3 cells. Squared-distance form:
-    // compare (r*dx)^2 against minDistSq, keeping the hot path sqrt-free (orthogonal opt already
-    // present). Ported from FastMC distanceFieldRefine (unitymol-fast-surfaces P11).
-    for (int r = 0; r <= idSESRangeToSearch; r++) {
-        float rb = (float)r * dxSES;
-        if (rb * rb > minDistSq) break; // no farther shell can beat the current best
-        for (int x = -r; x <= r; x++) {
-            curgridSESId.x = clamp(ijk.x + x , 0, sliceGridDimSES.x - 1);
-            int ax = abs(x);
-            for (int y = -r; y <= r; y++) {
-                curgridSESId.y = clamp(ijk.y + y , 0, sliceGridDimSES.y - 1);
-                int ay = abs(y);
-                // Only the SHELL at Chebyshev radius r: max(|x|,|y|,|z|) == r. If |x| or |y| is r,
-                // z spans the full [-r,r]; otherwise z must be exactly +-r (2 cells).
-                int zlo, zhi, zstep;
-                if (max(ax, ay) == r) { zlo = -r; zhi = r; zstep = 1; }
-                else { zlo = -r; zhi = r; zstep = (r == 0) ? 1 : (2 * r); } // r=0: single cell
-                for (int z = zlo; z <= zhi; z += zstep) {
-                    curgridSESId.z = clamp(ijk.z + z , 0, sliceGridDimSES.z - 1);
-                    int curgrid1DSESId = flatten3DTo1D(curgridSESId, sliceGridDimSES);
+    //Find the closest outside SES cell in the range [-probeRadius, +probeRadius]
+// #pragma unroll
+    for (int x = -idSESRangeToSearch; x <= idSESRangeToSearch; x++) {
 
-                    if (gridValues[curgrid1DSESId] > pme) {//Outside
+        curgridSESId.x = clamp(ijk.x + x , 0, sliceGridDimSES.x - 1);
+// #pragma unroll
+        for (int y = -idSESRangeToSearch; y <= idSESRangeToSearch; y++) {
+            curgridSESId.y = clamp(ijk.y + y , 0, sliceGridDimSES.y - 1);
+// #pragma unroll
+            for (int z = -idSESRangeToSearch; z <= idSESRangeToSearch; z++) {
+                curgridSESId.z = clamp(ijk.z + z , 0, sliceGridDimSES.z - 1);
+                int curgrid1DSESId = flatten3DTo1D(curgridSESId, sliceGridDimSES);
 
-                        int3 curgrid3DSESIdOffset = make_int3(curgridSESId.x + offsetGrid.x,
-                                                            curgridSESId.y + offsetGrid.y,
-                                                            curgridSESId.z + offsetGrid.z);
+                if (gridValues[curgrid1DSESId] > pme) {//Outside
+                    
+                    int3 curgrid3DSESIdOffset = make_int3(curgridSESId.x + offsetGrid.x,
+                                                        curgridSESId.y + offsetGrid.y,
+                                                        curgridSESId.z + offsetGrid.z);
 
-                        float3 spacePosSES = gridToSpace(curgrid3DSESIdOffset, originGridSES, dxSES);
-                        //Distance from our current grid cell to the outside grid cell
-                        float dsq = sqr_distance(spacePosSES, spacePos3DCellSES);
-                        minDistSq = min(dsq, minDistSq);
-                    }
+                    float3 spacePosSES = gridToSpace(curgrid3DSESIdOffset, originGridSES, dxSES);
+                    //Distance from our current grid cell to the outside grid cell
+                    float dsq = sqr_distance(spacePosSES, spacePos3DCellSES);
+                    minDistSq = min(dsq, minDistSq);
                 }
             }
         }
