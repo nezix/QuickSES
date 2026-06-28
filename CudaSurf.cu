@@ -648,6 +648,15 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
     int cut = 8;
 
     cerr << "Full size grid = " << gridSESSize << " x " << gridSESSize << " x " << gridSESSize << endl;
+
+    // Streams for the refine kernel are reused across all slabs: create once here and destroy once
+    // after the slab loop, instead of per-slab create/destroy (which ran 8x on large multi-slab
+    // grids). Stream handles are slab-independent, so hoisting is correctness-neutral.
+    const int nbStream = 4;
+    cudaStream_t streams[nbStream];
+    for (int si = 0; si < nbStream; si++)
+        cudaStreamCreate(&(streams[si]));
+
     // cudaEventRecord(start);
     // for (int slice = 0; slice < gridSESSize; slice += sliceSmallSize) {
     for (int i = 0; i < gridSESSize; i += sliceSmallSize)
@@ -682,7 +691,11 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
                                                                      cudaSortedAtomPosRad, cudaGridValues, /*offset*/ reducedOffset, N, sliceNbCellSES);
 
                 gpuErrchk(cudaPeekAtLastError());
-                gpuErrchk(cudaDeviceSynchronize());
+                // No explicit cudaDeviceSynchronize() here: the immediately-following thrust::sort on
+                // the default stream is itself synchronizing and ordered after probeIntersection, so
+                // the sort already waits for the kernel. Dropping the redundant per-slab full-device
+                // sync removes one host stall per slab. (Trades away async-error surfacing at this
+                // exact point; errors still surface at the next peek/sync. Verify on dgx.)
 
                 // Count cells at the border, cells that will be used in the refinement step
                 thrust::device_ptr<int> fillThrust(cudaFillCheck);
@@ -701,10 +714,7 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
                 // Too long execution of this kernel triggers the watchdog timer => cut it
                 int tranche = min(notEmptyCells, 65536 / 8 * NBTHREADS);
 
-                const int nbStream = 4;
-                cudaStream_t streams[nbStream];
-                for (int i = 0; i < nbStream; i++)
-                    cudaStreamCreate(&(streams[i]));
+                // streams created once before the slab loop (hoisted)
                 int idStream = 0;
 
                 for (unsigned int o = 0; o < notEmptyCells; o += tranche)
@@ -725,8 +735,7 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
                 gpuErrchk(cudaPeekAtLastError());
                 gpuErrchk(cudaDeviceSynchronize());
 
-                for (int i = 0; i < nbStream; i++)
-                    cudaStreamDestroy(streams[i]);
+                // streams destroyed once after the slab loop (hoisted)
 
                 // Reset grid values that are outside of the slice
 
@@ -757,6 +766,9 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
     // float milliseconds = 0;
     // cudaEventElapsedTime(&milliseconds, start, stop);
     // std::cerr << "Time for step 2 : " << milliseconds << " ms" << std::endl;
+
+    for (int si = 0; si < nbStream; si++)
+        cudaStreamDestroy(streams[si]);
 
     cudaFree(cudaSortedAtomPosRad);
     cudaFree(cudaHashIndex);
