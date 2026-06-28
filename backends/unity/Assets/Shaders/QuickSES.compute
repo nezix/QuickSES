@@ -194,23 +194,59 @@ void distanceFieldRefine(uint3 gid : SV_DispatchThreadID)
     float pme = PROBERADIUS - EPSILON;
     float minDist = 100000.0;
 
-    for (int x = -idSESRangeToSearch; x <= idSESRangeToSearch; x = x + 1)
+    // EXPANDING-SHELL branch-and-bound (bit-exact with the full (2R+1)^3 cube). A cell at integer
+    // offset (x,y,z) with Chebyshev radius r = max(|x|,|y|,|z|) has Euclidean distance >= dx*r, so
+    // once the current shell's lower bound (r*dx) exceeds the best distance found so far, no farther
+    // cell can improve minDist -> stop. The shells' union equals the cube and min is idempotent, so
+    // this finds the identical nearest cell while reading only the shells up to the first hit + 1,
+    // not all (2R+1)^3 cells. Ported from FastMC distanceFieldRefine (unitymol-fast-surfaces P11).
+    for (int r = 0; r <= idSESRangeToSearch; r = r + 1)
     {
-        int cx = clampi(ijk.x + x, 0, sliceDim.x - 1);
-        for (int y = -idSESRangeToSearch; y <= idSESRangeToSearch; y = y + 1)
+        if ((float)r * dxSES > minDist) { break; } // no farther shell can beat the current best
+        for (int x = -r; x <= r; x = x + 1)
         {
-            int cy = clampi(ijk.y + y, 0, sliceDim.y - 1);
-            for (int z = -idSESRangeToSearch; z <= idSESRangeToSearch; z = z + 1)
+            int cx = clampi(ijk.x + x, 0, sliceDim.x - 1);
+            int ax = abs(x);
+            for (int y = -r; y <= r; y = y + 1)
             {
-                int cz = clampi(ijk.z + z, 0, sliceDim.z - 1);
-                int3 cur = int3(cx, cy, cz);
-                int curId = flatten3DTo1D(cur, sliceDim);
-                if (gridValues[curId] > pme) // outside
+                int cy = clampi(ijk.y + y, 0, sliceDim.y - 1);
+                int ay = abs(y);
+                // Only the SHELL at Chebyshev radius r: max(|x|,|y|,|z|) == r. If |x| or |y| is r,
+                // z spans the full [-r,r]; otherwise z must be exactly +-r (2 cells).
+                if (max(ax, ay) == r)
                 {
-                    int3 curOffset = cur; // offset = 0
-                    float3 spacePosSES = gridToSpace(curOffset, originSESp, dxSES);
-                    float d = fast_distance3(spacePosSES, spacePos3DCellSES);
-                    minDist = min(d, minDist);
+                    for (int z = -r; z <= r; z = z + 1)
+                    {
+                        int cz = clampi(ijk.z + z, 0, sliceDim.z - 1);
+                        int3 cur = int3(cx, cy, cz);
+                        int curId = flatten3DTo1D(cur, sliceDim);
+                        if (gridValues[curId] > pme) // outside
+                        {
+                            int3 curOffset = cur; // offset = 0
+                            float3 spacePosSES = gridToSpace(curOffset, originSESp, dxSES);
+                            float d = fast_distance3(spacePosSES, spacePos3DCellSES);
+                            minDist = min(d, minDist);
+                        }
+                    }
+                }
+                else
+                {
+                    [unroll]
+                    for (int zs = 0; zs < 2; zs = zs + 1)
+                    {
+                        if (r == 0 && zs == 1) { continue; } // r=0 is a single cell, don't double-count
+                        int z = (zs == 0) ? -r : r;
+                        int cz = clampi(ijk.z + z, 0, sliceDim.z - 1);
+                        int3 cur = int3(cx, cy, cz);
+                        int curId = flatten3DTo1D(cur, sliceDim);
+                        if (gridValues[curId] > pme) // outside
+                        {
+                            int3 curOffset = cur; // offset = 0
+                            float3 spacePosSES = gridToSpace(curOffset, originSESp, dxSES);
+                            float d = fast_distance3(spacePosSES, spacePos3DCellSES);
+                            minDist = min(d, minDist);
+                        }
+                    }
                 }
             }
         }
