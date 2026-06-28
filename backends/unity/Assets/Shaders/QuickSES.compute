@@ -75,6 +75,12 @@ float fast_distance3(float3 a, float3 b)
     return sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
 }
 
+float sqr_distance3(float3 a, float3 b)
+{
+    float3 d = a - b;
+    return d.x * d.x + d.y * d.y + d.z * d.z;
+}
+
 int clampi(int v, int a, int b)
 {
     return max(a, min(v, b));
@@ -192,7 +198,9 @@ void distanceFieldRefine(uint3 gid : SV_DispatchThreadID)
     float newresult = -dxSES;
     int idSESRangeToSearch = rangeSearchRefine; // ceil(PROBERADIUS/dxSES)
     float pme = PROBERADIUS - EPSILON;
-    float minDist = 100000.0;
+    // Squared-distance hot loop (unified with the CUDA/WGSL ports): compare squared distances in the
+    // inner loop and take a single sqrt at the end (sqrt monotonic -> min over d == sqrt(min over d^2)).
+    float minDistSq = 100000.0 * 100000.0;
 
     // EXPANDING-SHELL branch-and-bound (bit-exact with the full (2R+1)^3 cube). A cell at integer
     // offset (x,y,z) with Chebyshev radius r = max(|x|,|y|,|z|) has Euclidean distance >= dx*r, so
@@ -202,7 +210,8 @@ void distanceFieldRefine(uint3 gid : SV_DispatchThreadID)
     // not all (2R+1)^3 cells. Ported from FastMC distanceFieldRefine (unitymol-fast-surfaces P11).
     for (int r = 0; r <= idSESRangeToSearch; r = r + 1)
     {
-        if ((float)r * dxSES > minDist) { break; } // no farther shell can beat the current best
+        float rb = (float)r * dxSES;
+        if (rb * rb > minDistSq) { break; } // no farther shell can beat the current best
         for (int x = -r; x <= r; x = x + 1)
         {
             int cx = clampi(ijk.x + x, 0, sliceDim.x - 1);
@@ -224,8 +233,8 @@ void distanceFieldRefine(uint3 gid : SV_DispatchThreadID)
                         {
                             int3 curOffset = cur; // offset = 0
                             float3 spacePosSES = gridToSpace(curOffset, originSESp, dxSES);
-                            float d = fast_distance3(spacePosSES, spacePos3DCellSES);
-                            minDist = min(d, minDist);
+                            float dsq = sqr_distance3(spacePosSES, spacePos3DCellSES);
+                            minDistSq = min(dsq, minDistSq);
                         }
                     }
                 }
@@ -243,17 +252,17 @@ void distanceFieldRefine(uint3 gid : SV_DispatchThreadID)
                         {
                             int3 curOffset = cur; // offset = 0
                             float3 spacePosSES = gridToSpace(curOffset, originSESp, dxSES);
-                            float d = fast_distance3(spacePosSES, spacePos3DCellSES);
-                            minDist = min(d, minDist);
+                            float dsq = sqr_distance3(spacePosSES, spacePos3DCellSES);
+                            minDistSq = min(dsq, minDistSq);
                         }
                     }
                 }
             }
         }
     }
-    if (minDist < 999.0)
+    if (minDistSq < 999.0 * 999.0)
     {
-        newresult = PROBERADIUS - minDist;
+        newresult = PROBERADIUS - sqrt(minDistSq);
     }
     gridValues[hash] = newresult;
 }
