@@ -587,6 +587,13 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
     std::clock_t startSES = std::clock();
 #endif
 
+    // TODO (session API): a future explicit API_beginSession/computeFrame/endSession could let the
+    // caller assert "same molecule, only positions moved" to cache grid dims/bounds and skip
+    // re-derivation. Measured not worth a transparent version: getMinMax + dim setup are O(N) host
+    // work, microseconds for small N and negligible vs GPU compute for large N; the per-frame cost is
+    // the GPU hash/sort/grid/MC, which must rerun since the surface moves. The buffer pool (above) is
+    // the part of the trajectory win that pays off.
+
     // Record a mesh per slice
     std::vector<MeshData> resultMeshes;
 
