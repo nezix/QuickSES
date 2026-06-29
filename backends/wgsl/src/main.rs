@@ -112,12 +112,18 @@ fn main() {
     let mut in_path = String::new();
     let mut out_path = String::new();
     let mut reso: f32 = 0.5;
+    // View-dependent cull (the API_computeSES_view analog; headless half-space form): --cull-x <frac>
+    // keeps only slabs whose X-range overlaps the lower `frac` of the grid (frac in (0,1]). frac=1.0 =
+    // no cull (default => bit-exact with the full surface, the test_parity gate). Skipping an
+    // off-region slab saves ALL its per-slab cost. Cross-platform port of CudaSurf.cu mode 0.
+    let mut cull_x: f32 = 1.0;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "-i" => { in_path = args[i + 1].clone(); i += 2; }
             "-o" => { out_path = args[i + 1].clone(); i += 2; }
             "-v" => { reso = args[i + 1].parse().unwrap(); i += 2; }
+            "--cull-x" => { cull_x = args[i + 1].parse().unwrap(); i += 2; }
             _ => { i += 1; }
         }
     }
@@ -130,10 +136,10 @@ fn main() {
     }
 
     let t_total = Instant::now();
-    pollster::block_on(run(&in_path, &out_path, reso, t_total));
+    pollster::block_on(run(&in_path, &out_path, reso, cull_x, t_total));
 }
 
-async fn run(in_path: &str, out_path: &str, reso: f32, t_total: Instant) {
+async fn run(in_path: &str, out_path: &str, reso: f32, cull_x: f32, t_total: Instant) {
     // ===== phase timers (all in ms, printed at the end) =====
     // t_setup: PDB parse + grid setup + neighbor bucketing + buffer create/upload.
     // t_gpu_compute: SUM of the 4 GPU dispatch regions (submit->poll), no CPU work inside
@@ -379,9 +385,17 @@ async fn run(in_path: &str, out_path: &str, reso: f32, t_total: Instant) {
     let grid_init: Vec<f32> = vec![probe; slice_nb_cells];
     let zero_vpc: Vec<u8> = vec![0u8; slice_nb_cells * 8];
 
+    // View cull threshold (cells): keep a slab only if i_off < cull_x*grid (CudaSurf.cu mode 0).
+    let cull_x_cells = (cull_x * grid_ses_size as f32).ceil() as i32;
+
     // ---------- slab triple loop (CudaSurf.cu:653-754) ----------
     let mut i_off = 0i32;
     while i_off < grid_ses_size {
+        // View cull (X half-space): skip slabs outside the kept region — saves all their per-slab cost.
+        if i_off >= cull_x_cells {
+            i_off += slice_small_size;
+            continue;
+        }
         let mut j_off = 0i32;
         while j_off < grid_ses_size {
             let mut k_off = 0i32;
