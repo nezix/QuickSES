@@ -72,10 +72,37 @@ void initRadiusDic() {
     radiusDic['X'] = 1.40f * factor;
 }
 
+// Per-slab streaming callback for the view-dependent path (API_computeSES_view). Called once per
+// COMPLETED slab, in priority order (visible/nearest first), with that slab's mesh in HOST memory.
+// The pointers are valid only for the duration of the call — the consumer must copy/enqueue and
+// return promptly (the surface loop continues right after, so a slow callback stalls the pipeline).
+// slabIndex: the slab's index in the priority-ordered sequence. isVisible: 1 if the slab's AABB
+// intersects the view frustum, else 0. tris is a flat int array of length NTri (3 per triangle).
+typedef void (*SlabMeshCallback)(int slabIndex, int isVisible,
+                                 float3 *verts, unsigned int NVert,
+                                 int *tris, unsigned int NTri,
+                                 int *atomIdPerVert, void *userData);
+
 extern "C" {
 
     API void API_computeSES(float resoSES, float3 *atomPos, float *atomRad, unsigned int N, float3 *out_vertices,
         unsigned int *NVert, int *out_triangles, unsigned int *NTri, int doSmoothing);
+
+    // View-dependent SES (opt-in; API_computeSES stays the full-surface default).
+    // frustumPlanes: 6 planes * 4 floats (nx,ny,nz,d), world space, normals pointing INWARD
+    //   (a point p is inside the frustum iff plane.xyz·p + plane.w >= 0 for all 6).
+    // camPos: camera world position (for nearest-first ordering).
+    // mode: 0 = VISIBLE-ONLY (skip slabs whose AABB is outside the frustum entirely);
+    //       1 = VISIBLE-FIRST (compute ALL slabs, but ordered visible+nearest first).
+    // slabCb/userData: per-slab streaming callback (may be NULL). When non-NULL, each completed slab
+    //   is delivered immediately; the consolidated API_getVertices/Triangles mesh is also built (all
+    //   computed slabs) so a caller can still grab one mesh at the end.
+    // If frustumPlanes is NULL, behaves like the full computation in offset order (no culling).
+    API void API_computeSES_view(float resoSES, float3 *atomPos, float *atomRad, unsigned int N,
+        const float *frustumPlanes, float3 camPos, int mode,
+        SlabMeshCallback slabCb, void *userData,
+        unsigned int *NVert, unsigned int *NTri, int doSmoothing);
+
     API int* API_getTriangles(bool invertTriangles);
     API float3 *API_getVertices();
     API void API_freeMesh();

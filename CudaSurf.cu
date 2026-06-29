@@ -127,6 +127,48 @@ static void freePool(DevicePool &p)
     }
 }
 
+// ---------------------------------------------------------------------------
+// View-dependent slab culling/ordering support (the API_computeSES_view path).
+// A "slab" is one spatial sub-cube of the grid (the offset.x/y/z of the slab loop). For the
+// view path we collect the slabs, test each slab's world-space AABB against the camera frustum,
+// and process them visible+nearest first (and, in visible-only mode, skip the off-frustum ones).
+// Per-slab cost (refine/probe/weld/...) is paid per slab, so skipping a slab saves all of it.
+struct ViewParams
+{
+    bool             enabled = false;        // a frustum was provided
+    int              mode    = 1;            // 0 = visible-only, 1 = visible-first
+    float            planes[24];             // 6 inward planes * (nx,ny,nz,d)
+    float3           camPos = { 0, 0, 0 };
+    SlabMeshCallback cb     = NULL;
+    void *           userData = NULL;
+};
+
+// One pending slab to compute: its grid offset + a sort key (visible flag + distance to camera).
+struct SlabTask
+{
+    int3   offset;        // slab offset (i,j,k) into the SES grid
+    float3 aabbCenter;    // world-space center of the slab AABB (for camera distance)
+    bool   visible;       // AABB intersects the frustum
+    float  camDist2;      // squared distance from camPos to aabbCenter
+};
+
+// Test a world-space AABB [bmin,bmax] against 6 inward-pointing frustum planes. Conservative:
+// returns false only if the box is fully outside one plane (the standard p-vertex test).
+inline bool aabbInFrustum(const float *planes, float3 bmin, float3 bmax)
+{
+    for (int pl = 0; pl < 6; pl++)
+    {
+        float nx = planes[pl * 4 + 0], ny = planes[pl * 4 + 1], nz = planes[pl * 4 + 2], d = planes[pl * 4 + 3];
+        // p-vertex: the AABB corner farthest along the (inward) normal.
+        float px = (nx >= 0.0f) ? bmax.x : bmin.x;
+        float py = (ny >= 0.0f) ? bmax.y : bmin.y;
+        float pz = (nz >= 0.0f) ? bmax.z : bmin.z;
+        if (nx * px + ny * py + nz * pz + d < 0.0f)
+            return false; // fully outside this plane => outside the frustum
+    }
+    return true;
+}
+
 unsigned int getMinMax(chain *C, float3 *minVal, float3 *maxVal, float *maxAtom)
 {
     atom *A = NULL;
@@ -586,7 +628,8 @@ MeshData computeMarchingCubes(int3 sliceGridSESDim, int cutMC, int sliceNbCellSE
     return result;
 }
 
-std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsigned int N, float resoSES, int doSmoothing = 1)
+std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsigned int N, float resoSES, int doSmoothing = 1,
+                                       const ViewParams *view = NULL)
 {
 #if MEASURETIME
     std::clock_t startSES = std::clock();
@@ -731,17 +774,56 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
     for (int si = 0; si < nbStream; si++)
         cudaStreamCreate(&(streams[si]));
 
-    // cudaEventRecord(start);
-    // for (int slice = 0; slice < gridSESSize; slice += sliceSmallSize) {
+    // ---- Build the slab work-list, then (for the view path) cull + order it ----
+    // Each slab is a spatial sub-cube at offset (i,j,k). For the view path we compute its world-space
+    // AABB, frustum-test it, and process visible+nearest first; visible-only mode drops off-frustum
+    // slabs (skipping ALL their per-slab cost). Without a view, this is the original offset order.
+    float3 originGridNeighbor_v = make_float3(originGridNeighborDx.x, originGridNeighborDx.y, originGridNeighborDx.z);
+    std::vector<SlabTask> slabTasks;
     for (int i = 0; i < gridSESSize; i += sliceSmallSize)
-    {
-        offset.x = i;
         for (int j = 0; j < gridSESSize; j += sliceSmallSize)
-        {
-            offset.y = j;
             for (int k = 0; k < gridSESSize; k += sliceSmallSize)
             {
-                offset.z = k;
+                SlabTask t;
+                t.offset = make_int3(i, j, k);
+                // Slab world-space AABB: the processed slab spans [offset, offset+sliceSmallSize) cells
+                // of edge dxSES, from the grid origin. (sliceSmallSize is the non-halo stride.)
+                float3 bmin = gridToSpace(make_int3(i, j, k), originGridNeighbor_v, resoSES);
+                float3 bmax = gridToSpace(make_int3(min(i + sliceSmallSize, gridSESSize),
+                                                    min(j + sliceSmallSize, gridSESSize),
+                                                    min(k + sliceSmallSize, gridSESSize)),
+                                          originGridNeighbor_v, resoSES);
+                t.aabbCenter = make_float3((bmin.x + bmax.x) * 0.5f, (bmin.y + bmax.y) * 0.5f, (bmin.z + bmax.z) * 0.5f);
+                if (view != NULL && view->enabled)
+                {
+                    t.visible = aabbInFrustum(view->planes, bmin, bmax);
+                    float ddx = t.aabbCenter.x - view->camPos.x;
+                    float ddy = t.aabbCenter.y - view->camPos.y;
+                    float ddz = t.aabbCenter.z - view->camPos.z;
+                    t.camDist2 = ddx * ddx + ddy * ddy + ddz * ddz;
+                }
+                else { t.visible = true; t.camDist2 = 0.0f; }
+                // visible-only mode (0): drop off-frustum slabs entirely.
+                if (view != NULL && view->enabled && view->mode == 0 && !t.visible)
+                    continue;
+                slabTasks.push_back(t);
+            }
+    // Order: visible first, then nearest-camera first. Stable w.r.t. the original order otherwise.
+    if (view != NULL && view->enabled)
+        std::stable_sort(slabTasks.begin(), slabTasks.end(), [](const SlabTask &a, const SlabTask &b) {
+            if (a.visible != b.visible) return a.visible > b.visible; // visible (true) first
+            return a.camDist2 < b.camDist2;                           // nearest first
+        });
+
+    // cudaEventRecord(start);
+    {
+        for (size_t taskId = 0; taskId < slabTasks.size(); taskId++)
+        {
+            const SlabTask &task = slabTasks[taskId];
+            {
+                offset.x = task.offset.x;
+                offset.y = task.offset.y;
+                offset.z = task.offset.z;
                 // cerr << "-----------------------------\nStarting : " << offset.x << " / " << offset.y << " / " << offset.z << endl;
 
                 memsetCudaFloat<<<(sliceNbCellSES + NBTHREADS - 1) / NBTHREADS, NBTHREADS>>>(cudaGridValues, probeRadius, sliceNbCellSES);
@@ -826,14 +908,36 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
                 smoothMeshLaplacian(doSmoothing, mesh);
                 resultMeshes.push_back(mesh);
 
+                // View path: stream this completed slab to the consumer immediately, in priority
+                // order (visible/nearest first). The mesh.triangles are int3 (per-tri); the callback
+                // contract is a flat int array, so emit a temporary flattened copy (dropping the
+                // degenerate triangles, matching the consolidated path's filter).
+                if (view != NULL && view->cb != NULL)
+                {
+                    int *flatTris = (int *)malloc(sizeof(int) * mesh.NTriangles * 3);
+                    unsigned int nt = 0;
+                    for (int t = 0; t < mesh.NTriangles; t++)
+                    {
+                        int3 tr = mesh.triangles[t];
+                        if (tr.x != tr.y && tr.y != tr.z && tr.x != tr.z)
+                        {
+                            flatTris[nt++] = tr.x;
+                            flatTris[nt++] = tr.y;
+                            flatTris[nt++] = tr.z;
+                        }
+                    }
+                    view->cb((int)taskId, task.visible ? 1 : 0,
+                             mesh.vertices, (unsigned int)mesh.NVertices,
+                             flatTris, nt, mesh.atomIdPerVert, view->userData);
+                    free(flatTris);
+                }
+
                 // if(resultMeshes.size() == 2){
                 // return resultMeshes;
                 // }
                 // break;
             }
-            // break;
         }
-        // break;
     }
     // cudaEventRecord(stop);
     // cudaEventSynchronize(stop);
@@ -864,15 +968,11 @@ extern "C"
     int *globalIdAtomPerVert;
 }
 
-API void API_computeSES(float resoSES, float3 *atomPos, float *atomRad, unsigned int N, float3 *out_vertices,
-                        unsigned int *NVert, int *out_triangles, unsigned int *NTri, int doSmoothing)
+// Consolidate the per-slab meshes into the global host arrays (globalVertices/Triangles/
+// IdAtomPerVert) that API_getVertices/Triangles/AtomIdPerVert return, then free the per-slab
+// arrays. Shared by API_computeSES and API_computeSES_view. Sets *NVert/*NTri + the globals.
+static void consolidateMeshes(std::vector<MeshData> &resultMeshes, unsigned int *NVert, unsigned int *NTri)
 {
-
-    *NVert = 0;
-    *NTri = 0;
-
-    std::vector<MeshData> resultMeshes = computeSlicedSES(atomPos, atomRad, N, resoSES, doSmoothing);
-
     unsigned int totalVerts = 0;
     unsigned int totalTris = 0;
 
@@ -923,10 +1023,39 @@ API void API_computeSES(float resoSES, float3 *atomPos, float *atomRad, unsigned
     *NTri = curIdT;
     NTriangles = curIdT;
     NVertices = totalVerts;
-    // free(positions);
+}
 
-    // globalVertices = out_vertices;
-    // globalTriangles = out_triangles;
+API void API_computeSES(float resoSES, float3 *atomPos, float *atomRad, unsigned int N, float3 *out_vertices,
+                        unsigned int *NVert, int *out_triangles, unsigned int *NTri, int doSmoothing)
+{
+    *NVert = 0;
+    *NTri = 0;
+
+    std::vector<MeshData> resultMeshes = computeSlicedSES(atomPos, atomRad, N, resoSES, doSmoothing);
+    consolidateMeshes(resultMeshes, NVert, NTri);
+}
+
+API void API_computeSES_view(float resoSES, float3 *atomPos, float *atomRad, unsigned int N,
+                             const float *frustumPlanes, float3 camPos, int mode,
+                             SlabMeshCallback slabCb, void *userData,
+                             unsigned int *NVert, unsigned int *NTri, int doSmoothing)
+{
+    *NVert = 0;
+    *NTri = 0;
+
+    ViewParams view;
+    view.enabled  = (frustumPlanes != NULL);
+    view.mode     = mode;
+    view.camPos   = camPos;
+    view.cb       = slabCb;
+    view.userData = userData;
+    if (frustumPlanes != NULL)
+        for (int p = 0; p < 24; p++) view.planes[p] = frustumPlanes[p];
+
+    std::vector<MeshData> resultMeshes = computeSlicedSES(atomPos, atomRad, N, resoSES, doSmoothing, &view);
+    // Consolidate the COMPUTED slabs too, so a caller can still fetch one mesh via API_getVertices
+    // after the streamed callbacks (in visible-only mode this is the visible subset).
+    consolidateMeshes(resultMeshes, NVert, NTri);
 }
 
 extern "C"
