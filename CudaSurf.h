@@ -103,6 +103,17 @@ extern "C" {
         SlabMeshCallback slabCb, void *userData,
         unsigned int *NVert, unsigned int *NTri, int doSmoothing);
 
+    // Two-band distance LOD (opt-in): NEAR band at resoSES (fine), FAR band at resoSES*coarseMul
+    // (coarse), selected by complementary frustums (let them overlap slightly for a seam skirt).
+    // Keeps the WHOLE surface but computes the distant band cheaper. coarseMul e.g. 2.0. Both bands
+    // are streamed via slabCb (near first). Use this when distant-but-visible context should stay
+    // shown; use API_computeSES_view mode 0 instead when off-screen parts can be dropped entirely.
+    API void API_computeSES_lod(float resoSES, float coarseMul,
+        float3 *atomPos, float *atomRad, unsigned int N,
+        const float *nearPlanes, const float *farPlanes, float3 camPos,
+        SlabMeshCallback slabCb, void *userData,
+        unsigned int *NVert, unsigned int *NTri, int doSmoothing);
+
     API int* API_getTriangles(bool invertTriangles);
     API float3 *API_getVertices();
     API void API_freeMesh();

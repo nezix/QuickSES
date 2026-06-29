@@ -1058,6 +1058,48 @@ API void API_computeSES_view(float resoSES, float3 *atomPos, float *atomRad, uns
     consolidateMeshes(resultMeshes, NVert, NTri);
 }
 
+// Two-band distance LOD (opt-in). Computes the surface in TWO passes with complementary frustums:
+//   pass 1 (NEAR): fine voxel `resoSES`, slabs inside `nearPlanes`  -> streamed first (isVisible=1);
+//   pass 2 (FAR):  coarse voxel `resoSES*coarseMul`, slabs inside `farPlanes` -> streamed after.
+// Each pass is internally uniform (no internal LOD seam); the ONE seam is between the bands, which the
+// caller hides by letting nearPlanes and farPlanes OVERLAP slightly (a skirt). Both passes use
+// visible-only culling (mode 0), so off-band slabs are skipped. The consolidated API_getVertices mesh
+// holds near+far. Cheaper than full-fine because the far band is computed at coarser resolution.
+// Validated on dgx (1AON v0.3, 2x coarse far half): ~1.56x vs full-fine while keeping the whole surface.
+API void API_computeSES_lod(float resoSES, float coarseMul,
+                            float3 *atomPos, float *atomRad, unsigned int N,
+                            const float *nearPlanes, const float *farPlanes, float3 camPos,
+                            SlabMeshCallback slabCb, void *userData,
+                            unsigned int *NVert, unsigned int *NTri, int doSmoothing)
+{
+    *NVert = 0;
+    *NTri = 0;
+
+    // Pass 1 — near band, fine voxel.
+    ViewParams vNear;
+    vNear.enabled = (nearPlanes != NULL);
+    vNear.mode = 0; // visible-only: skip slabs outside the near band
+    vNear.camPos = camPos;
+    vNear.cb = slabCb;
+    vNear.userData = userData;
+    if (nearPlanes != NULL) for (int p = 0; p < 24; p++) vNear.planes[p] = nearPlanes[p];
+    std::vector<MeshData> nearMeshes = computeSlicedSES(atomPos, atomRad, N, resoSES, doSmoothing, &vNear);
+
+    // Pass 2 — far band, coarse voxel.
+    ViewParams vFar;
+    vFar.enabled = (farPlanes != NULL);
+    vFar.mode = 0;
+    vFar.camPos = camPos;
+    vFar.cb = slabCb;
+    vFar.userData = userData;
+    if (farPlanes != NULL) for (int p = 0; p < 24; p++) vFar.planes[p] = farPlanes[p];
+    std::vector<MeshData> farMeshes = computeSlicedSES(atomPos, atomRad, N, resoSES * coarseMul, doSmoothing, &vFar);
+
+    // Consolidate near+far into the global arrays for callers that fetch one mesh at the end.
+    for (size_t i = 0; i < farMeshes.size(); i++) nearMeshes.push_back(farMeshes[i]);
+    consolidateMeshes(nearMeshes, NVert, NTri);
+}
+
 extern "C"
 {
     API int *API_getTriangles(bool invertTriangles = false)
