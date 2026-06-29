@@ -1090,17 +1090,20 @@ API void API_computeSES_lod(float resoSES, float coarseMul,
     // far frustum, no slab can fall in the far band, so the far pass would run a whole computeSlicedSES
     // (grid build + atom thrust::sort + the full slab-enumeration loop) only to produce 0 geometry.
     // The per-slab visible-only cull inside computeSlicedSES skips the heavy refine/MC kernels but NOT
-    // this setup+enumeration cost. Test the model AABB (padded by the same maxAtomRad + 2*probe the grid
-    // uses, so the test is conservative — never skips a band that could contribute) against farPlanes
-    // with the existing aabbInFrustum. Output-identical: when the far AABB is outside, the near pass
-    // (which already covered every visible slab) is the whole surface. (Mirrors the UnityMol port's
-    // LOD empty-far-pass skip; the per-slab empty-cell early-out CUDA already has, this is pass-level.)
+    // this setup+enumeration cost. Test the model AABB against farPlanes with the existing aabbInFrustum,
+    // padded CONSERVATIVELY so the test never skips a band that could contribute: the SES grid origin
+    // offsets each side by maxAtomRad + probeRadius (see originGridNeighbor) and the grid extent adds
+    // 2*maxAtomRad + 4*probeRadius along the longest axis (computeMaxDist), so a per-side pad of
+    // maxAtomRad + 2*probeRadius is >= the grid's actual reach — it OVER-covers, never under-covers.
+    // Output-identical: when the far AABB is outside, the near pass (which already covered every visible
+    // slab) is the whole surface. (Mirrors the UnityMol port's LOD empty-far-pass skip; the per-slab
+    // empty-cell early-out CUDA already has, this is the pass-level one.)
     bool runFar = true;
     if (farPlanes != NULL)
     {
         float3 aabbMin, aabbMax; float maxAtomRad;
         getMinMax(atomPos, atomRad, N, &aabbMin, &aabbMax, &maxAtomRad);
-        float pad = maxAtomRad + 2.0f * probeRadius;
+        float pad = maxAtomRad + 2.0f * probeRadius; // >= the grid's per-side reach (conservative)
         aabbMin.x -= pad; aabbMin.y -= pad; aabbMin.z -= pad;
         aabbMax.x += pad; aabbMax.y += pad; aabbMax.z += pad;
         runFar = aabbInFrustum(farPlanes, aabbMin, aabbMax);
