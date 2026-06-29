@@ -97,12 +97,17 @@ static DevicePool poolVertOri;          // sizeof(float3) * totalVerts   (weld t
 static DevicePool poolTri;              // sizeof(int)    * totalVerts   (weld temp)
 static DevicePool poolAtomIdPerVert;    // sizeof(int)    * newtotalVerts (weld temp)
 
-// Ensure a pool has at least `bytes` capacity; (re)allocate grow-only. Returns the
-// device pointer typed as T*. Reused buffers keep their allocation across calls.
+// Ensure a pool has at least `bytes` capacity. Grow when too small; also SHRINK when the held
+// capacity is far larger than needed, so a huge structure followed by small ones doesn't pin the
+// peak allocation until API_releasePool. The 4x hysteresis avoids realloc churn when sizes wobble
+// frame-to-frame (a trajectory whose grid stays roughly stable keeps its buffers). Returns the
+// device pointer typed as T*.
 template <typename T>
 static T *ensureDevice(DevicePool &p, size_t bytes)
 {
-    if (p.capacity < bytes)
+    bool tooSmall = p.capacity < bytes;
+    bool tooLarge = bytes > 0 && p.capacity > bytes * 4; // holding >4x what we need now
+    if (tooSmall || tooLarge)
     {
         if (p.ptr != NULL)
             gpuErrchk(cudaFree(p.ptr));
