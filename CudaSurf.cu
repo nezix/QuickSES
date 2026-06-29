@@ -69,6 +69,59 @@ string outputFilePath = "output.obj";
 string inputFilePath = "";
 bool weldVertices = true;
 
+// ---------------------------------------------------------------------------
+// Persistent device-buffer pool.
+// QuickSES used to cudaMalloc/cudaFree every device buffer on each API_computeSES
+// call. For repeated calls (trajectory playback, re-selection, voxel tweaks) that
+// alloc/free churn repeats every frame. A pool keeps each buffer alive across calls
+// and only reallocates (grow-only) when a later call needs more than the current
+// capacity. Same bytes, same kernels => bit-exact; only the allocator lifetime changes.
+// Free everything with API_releasePool() (on structure unload / app exit).
+struct DevicePool
+{
+    void *ptr = NULL;
+    size_t capacity = 0; // bytes
+};
+
+// One pool per logical buffer (named to match the local it replaces).
+static DevicePool poolAtomPosRad;       // sizeof(float4) * N
+static DevicePool poolSortedAtomPosRad; // sizeof(float4) * N
+static DevicePool poolHashIndex;        // sizeof(int2)   * N
+static DevicePool poolCellStartEnd;     // sizeof(int2)   * nbcellsNeighbor
+static DevicePool poolGridValues;       // sizeof(float)  * sliceNbCellSES
+static DevicePool poolFillCheck;        // sizeof(int)    * sliceNbCellSES
+static DevicePool poolVertPerCell;      // sizeof(uint2)  * sliceNbCellSES
+static DevicePool poolCompactedVoxels;  // sizeof(uint)   * sliceNbCellSES
+static DevicePool poolVertices;         // sizeof(float3) * totalVerts   (output mesh, grow-only)
+static DevicePool poolVertOri;          // sizeof(float3) * totalVerts   (weld temp)
+static DevicePool poolTri;              // sizeof(int)    * totalVerts   (weld temp)
+static DevicePool poolAtomIdPerVert;    // sizeof(int)    * newtotalVerts (weld temp)
+
+// Ensure a pool has at least `bytes` capacity; (re)allocate grow-only. Returns the
+// device pointer typed as T*. Reused buffers keep their allocation across calls.
+template <typename T>
+static T *ensureDevice(DevicePool &p, size_t bytes)
+{
+    if (p.capacity < bytes)
+    {
+        if (p.ptr != NULL)
+            gpuErrchk(cudaFree(p.ptr));
+        gpuErrchk(cudaMalloc(&p.ptr, bytes));
+        p.capacity = bytes;
+    }
+    return (T *)p.ptr;
+}
+
+static void freePool(DevicePool &p)
+{
+    if (p.ptr != NULL)
+    {
+        cudaFree(p.ptr);
+        p.ptr = NULL;
+        p.capacity = 0;
+    }
+}
+
 unsigned int getMinMax(chain *C, float3 *minVal, float3 *maxVal, float *maxAtom)
 {
     atom *A = NULL;
@@ -399,9 +452,17 @@ MeshData computeMarchingCubes(int3 sliceGridSESDim, int cutMC, int sliceNbCellSE
     unsigned int totalVoxels = lastElement.y + lastScanElement.y;
     unsigned int totalVerts = lastElement.x + lastScanElement.x;
 
-    float3 *cudaVertices;
-    gpuErrchk(cudaMalloc(&cudaVertices, sizeof(float3) * totalVerts));
+    // Pooled output-vertex buffer (grow-only; reused across slabs and across calls).
+    // Slabs run sequentially within a call, so a single pooled buffer is safe.
+    float3 *cudaVertices = ensureDevice<float3>(poolVertices, sizeof(float3) * totalVerts);
     memAlloc += sizeof(float3) * totalVerts;
+    // generateTriangleVerticesSMEM guards writes with `index < totalVerts-3`, leaving the last
+    // up-to-3 slots UNWRITTEN; the weld (groupVertices+sort+unique) then reads all totalVerts, so
+    // those tail slots must be deterministic. Fresh cudaMalloc happened to hand back zeroed pages;
+    // the pool reuses a buffer holding the previous slab's data, which perturbed the welded count
+    // (1AON v0.5: 1951253 -> 1951255). Zero the buffer so the tail is always (0,0,0) regardless of
+    // allocator -> deterministic AND pool-safe (also removes the pre-existing latent nondeterminism).
+    gpuErrchk(cudaMemset(cudaVertices, 0, sizeof(float3) * totalVerts));
 
     globalWorkSize = dim3((sliceGridSESDim.x + localWorkSize.x - 1) / localWorkSize.x, (sliceGridSESDim.y + localWorkSize.y - 1) / localWorkSize.y, (sliceGridSESDim.z + localWorkSize.z - 1) / localWorkSize.z);
 
@@ -434,9 +495,9 @@ MeshData computeMarchingCubes(int3 sliceGridSESDim, int cutMC, int sliceNbCellSE
         groupVertices<<<global, NBTHREADS>>>(cudaVertices, totalVerts, EPSILON);
         gpuErrchk(cudaPeekAtLastError());
 
-        gpuErrchk(cudaMalloc(&vertOri, sizeof(float3) * totalVerts));
+        vertOri = ensureDevice<float3>(poolVertOri, sizeof(float3) * totalVerts);
         gpuErrchk(cudaMemcpy(vertOri, cudaVertices, sizeof(float3) * totalVerts, cudaMemcpyDeviceToDevice));
-        gpuErrchk(cudaMalloc(&cudaTri, sizeof(int) * totalVerts));
+        cudaTri = ensureDevice<int>(poolTri, sizeof(int) * totalVerts);
 
         memAlloc += sizeof(float3) * totalVerts;
         memAlloc += sizeof(int) * totalVerts;
@@ -457,7 +518,7 @@ MeshData computeMarchingCubes(int3 sliceGridSESDim, int cutMC, int sliceNbCellSE
         thrust::lower_bound(vertThrust, last, vertOriThrust, vertOriThrust + totalVerts, triThrust);
         gpuErrchk(cudaPeekAtLastError());
 
-        gpuErrchk(cudaMalloc(&cudaAtomIdPerVert, sizeof(int) * newtotalVerts));
+        cudaAtomIdPerVert = ensureDevice<int>(poolAtomIdPerVert, sizeof(int) * newtotalVerts);
         memAlloc += sizeof(int) * newtotalVerts;
 
         global = (unsigned int)ceil((newtotalVerts + NBTHREADS - 1) / NBTHREADS);
@@ -493,10 +554,9 @@ MeshData computeMarchingCubes(int3 sliceGridSESDim, int cutMC, int sliceNbCellSE
         }
         free(tmpTri);
 
-        gpuErrchk(cudaFree(cudaVertices));
-        gpuErrchk(cudaFree(vertOri));
-        gpuErrchk(cudaFree(cudaTri));
-        gpuErrchk(cudaFree(cudaAtomIdPerVert));
+        // cudaVertices / vertOri / cudaTri / cudaAtomIdPerVert are pooled now
+        // (reused across slabs + calls, freed by API_releasePool). The old non-welded
+        // path leaked cudaVertices; pooling fixes that leak too.
     }
     else
     {
@@ -591,10 +651,11 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
     uint2 *vertPerCell;
     unsigned int *compactedVoxels;
 
-    gpuErrchk(cudaMalloc((void **)&cudaAtomPosRad, sizeof(float4) * N));
-    gpuErrchk(cudaMalloc((void **)&cudaSortedAtomPosRad, sizeof(float4) * N));
-    gpuErrchk(cudaMalloc((void **)&cudaHashIndex, sizeof(int2) * N));
-    gpuErrchk(cudaMalloc((void **)&cellStartEnd, sizeof(int2) * nbcellsNeighbor));
+    // Pooled (reused across calls; grow-only). See DevicePool above.
+    cudaAtomPosRad = ensureDevice<float4>(poolAtomPosRad, sizeof(float4) * N);
+    cudaSortedAtomPosRad = ensureDevice<float4>(poolSortedAtomPosRad, sizeof(float4) * N);
+    cudaHashIndex = ensureDevice<int2>(poolHashIndex, sizeof(int2) * N);
+    cellStartEnd = ensureDevice<int2>(poolCellStartEnd, sizeof(int2) * nbcellsNeighbor);
 
     //-------------- Step 1 : Insert atoms in neighbor cells -----------------
 
@@ -619,7 +680,7 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
 
     gpuErrchk(cudaPeekAtLastError());
 
-    gpuErrchk(cudaFree(cudaAtomPosRad));
+    // cudaAtomPosRad is pooled now (freed by API_releasePool, not per-call).
 
     // std::cerr << "Time for setup " << (std::clock() - start) / (double)(CLOCKS_PER_SEC / 1000) << " ms" << std::endl;
     // start = std::clock();
@@ -634,11 +695,12 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
     // int3 sliceGridSESDim = make_int3(sliceSmallSize, sliceSmallSize, sliceSmallSize);
     int3 fullSliceGridSESDim = make_int3(sliceSize, sliceSize, sliceSize);
 
-    gpuErrchk(cudaMalloc((void **)&cudaGridValues, sizeof(float) * sliceNbCellSES));
-    gpuErrchk(cudaMalloc((void **)&cudaFillCheck, sizeof(int) * sliceNbCellSES));
+    // Pooled (reused across calls; grow-only). See DevicePool above.
+    cudaGridValues = ensureDevice<float>(poolGridValues, sizeof(float) * sliceNbCellSES);
+    cudaFillCheck = ensureDevice<int>(poolFillCheck, sizeof(int) * sliceNbCellSES);
 
-    gpuErrchk(cudaMalloc(&vertPerCell, sizeof(uint2) * sliceNbCellSES));
-    gpuErrchk(cudaMalloc(&compactedVoxels, sizeof(unsigned int) * sliceNbCellSES));
+    vertPerCell = ensureDevice<uint2>(poolVertPerCell, sizeof(uint2) * sliceNbCellSES);
+    compactedVoxels = ensureDevice<unsigned int>(poolCompactedVoxels, sizeof(unsigned int) * sliceNbCellSES);
 
     gpuErrchk(cudaPeekAtLastError());
 
@@ -770,13 +832,7 @@ std::vector<MeshData> computeSlicedSES(float3 positions[], float radii[], unsign
     for (int si = 0; si < nbStream; si++)
         cudaStreamDestroy(streams[si]);
 
-    cudaFree(cudaSortedAtomPosRad);
-    cudaFree(cudaHashIndex);
-    cudaFree(cellStartEnd);
-    cudaFree(cudaGridValues);
-    cudaFree(cudaFillCheck);
-    cudaFree(vertPerCell);
-    cudaFree(compactedVoxels);
+    // Device buffers are pooled and kept alive across calls (freed by API_releasePool).
 
     free(atomPosRad);
 
@@ -842,6 +898,15 @@ API void API_computeSES(float resoSES, float3 *atomPos, float *atomRad, unsigned
         cumulVert += resultMeshes[i].NVertices;
     }
 
+    // Free the per-slab MeshData host arrays now they are consolidated into the globals.
+    // (Previously leaked: API_freeMesh only frees the consolidated global* arrays.)
+    for (int i = 0; i < resultMeshes.size(); i++)
+    {
+        free(resultMeshes[i].vertices);
+        free(resultMeshes[i].triangles);
+        free(resultMeshes[i].atomIdPerVert);
+    }
+
     *NVert = totalVerts;
     *NTri = curIdT;
     NTriangles = curIdT;
@@ -881,6 +946,24 @@ extern "C"
         free(globalVertices);
         free(globalTriangles);
         free(globalIdAtomPerVert);
+    }
+
+    // Release every pooled device buffer. Call on structure unload / app exit.
+    // Safe to call repeatedly; the next API_computeSES re-grows the pools as needed.
+    API void API_releasePool()
+    {
+        freePool(poolAtomPosRad);
+        freePool(poolSortedAtomPosRad);
+        freePool(poolHashIndex);
+        freePool(poolCellStartEnd);
+        freePool(poolGridValues);
+        freePool(poolFillCheck);
+        freePool(poolVertPerCell);
+        freePool(poolCompactedVoxels);
+        freePool(poolVertices);
+        freePool(poolVertOri);
+        freePool(poolTri);
+        freePool(poolAtomIdPerVert);
     }
 }
 

@@ -80,4 +80,7 @@ extern "C" {
     API float3 *API_getVertices();
     API void API_freeMesh();
     API int *API_getAtomIdPerVert();
+    // Release the persistent device-buffer pool (call on structure unload / app exit).
+    // Device buffers are reused across API_computeSES calls; this frees them.
+    API void API_releasePool();
 }
