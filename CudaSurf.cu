@@ -1086,14 +1086,41 @@ API void API_computeSES_lod(float resoSES, float coarseMul,
     std::vector<MeshData> nearMeshes = computeSlicedSES(atomPos, atomRad, N, resoSES, doSmoothing, &vNear);
 
     // Pass 2 — far band, coarse voxel.
-    ViewParams vFar;
-    vFar.enabled = (farPlanes != NULL);
-    vFar.mode = 0;
-    vFar.camPos = camPos;
-    vFar.cb = slabCb;
-    vFar.userData = userData;
-    if (farPlanes != NULL) for (int p = 0; p < 24; p++) vFar.planes[p] = farPlanes[p];
-    std::vector<MeshData> farMeshes = computeSlicedSES(atomPos, atomRad, N, resoSES * coarseMul, doSmoothing, &vFar);
+    // FAST-SKIP an entirely-empty far band: if the model's (padded) world AABB is fully OUTSIDE the
+    // far frustum, no slab can fall in the far band, so the far pass would run a whole computeSlicedSES
+    // (grid build + atom thrust::sort + the full slab-enumeration loop) only to produce 0 geometry.
+    // The per-slab visible-only cull inside computeSlicedSES skips the heavy refine/MC kernels but NOT
+    // this setup+enumeration cost. Test the model AABB against farPlanes with the existing aabbInFrustum,
+    // padded CONSERVATIVELY so the test never skips a band that could contribute: the SES grid origin
+    // offsets each side by maxAtomRad + probeRadius (see originGridNeighbor) and the grid extent adds
+    // 2*maxAtomRad + 4*probeRadius along the longest axis (computeMaxDist), so a per-side pad of
+    // maxAtomRad + 2*probeRadius is >= the grid's actual reach — it OVER-covers, never under-covers.
+    // Output-identical: when the far AABB is outside, the near pass (which already covered every visible
+    // slab) is the whole surface. (Mirrors the UnityMol port's LOD empty-far-pass skip; the per-slab
+    // empty-cell early-out CUDA already has, this is the pass-level one.)
+    bool runFar = true;
+    if (farPlanes != NULL)
+    {
+        float3 aabbMin, aabbMax; float maxAtomRad;
+        getMinMax(atomPos, atomRad, N, &aabbMin, &aabbMax, &maxAtomRad);
+        float pad = maxAtomRad + 2.0f * probeRadius; // >= the grid's per-side reach (conservative)
+        aabbMin.x -= pad; aabbMin.y -= pad; aabbMin.z -= pad;
+        aabbMax.x += pad; aabbMax.y += pad; aabbMax.z += pad;
+        runFar = aabbInFrustum(farPlanes, aabbMin, aabbMax);
+    }
+
+    std::vector<MeshData> farMeshes;
+    if (runFar)
+    {
+        ViewParams vFar;
+        vFar.enabled = (farPlanes != NULL);
+        vFar.mode = 0;
+        vFar.camPos = camPos;
+        vFar.cb = slabCb;
+        vFar.userData = userData;
+        if (farPlanes != NULL) for (int p = 0; p < 24; p++) vFar.planes[p] = farPlanes[p];
+        farMeshes = computeSlicedSES(atomPos, atomRad, N, resoSES * coarseMul, doSmoothing, &vFar);
+    }
 
     // Consolidate near+far into the global arrays for callers that fetch one mesh at the end.
     for (size_t i = 0; i < farMeshes.size(); i++) nearMeshes.push_back(farMeshes[i]);

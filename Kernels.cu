@@ -550,7 +550,8 @@ inline __host__ __device__ int computeClosestAtom(float3 vert, int3 id3DNeigh, i
 
 
     int closestId = -1;
-    float minD = 999999.0f;
+    float minDsq = 999999.0f * 999999.0f; // squared-distance argmin (sqrt is monotonic; no per-candidate
+                                          // sqrt needed). Matches the Metal nearestAtomSorted (dot-based).
     int3 curgridId;
 // #pragma unroll
     for (int x = -1; x <= 1; x++) {
@@ -570,10 +571,9 @@ inline __host__ __device__ int computeClosestAtom(float3 vert, int3 id3DNeigh, i
                     for (int id = idStart; id < idStop; id++) {
                         float4 xyzr = sorted_xyzr[id];
                         float3 pos = make_float3(xyzr.x, xyzr.y, xyzr.z);
-                        // float d = sqr_distance(pos, vert);
-                        float d = fast_distance(pos, vert);
-                        if(d < minD){
-                            minD = d;
+                        float dsq = sqr_distance(pos, vert); // squared distance: drop the per-candidate sqrt
+                        if(dsq < minDsq){
+                            minDsq = dsq;
                             closestId = id;
                         }
                     }
